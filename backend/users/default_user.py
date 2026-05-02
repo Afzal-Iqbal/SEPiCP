@@ -7,6 +7,7 @@ from django.db.utils import OperationalError, ProgrammingError
 def ensure_default_user() -> bool:
     """
     If DEFAULT_USER_SEED is enabled and credentials are set, ensure one user exists.
+    Intended to be called from post_migrate so setup happens during `manage.py migrate`.
     Returns True if a user was created, False otherwise.
     """
     if not getattr(settings, "DEFAULT_USER_SEED", False):

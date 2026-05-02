@@ -201,7 +201,8 @@ SIMPLE_JWT = {
 }
 
 
-# Default user: created on startup if missing (disable with DEFAULT_USER_SEED=false on IIS/prod).
+# Default user: created on `manage.py migrate` (post_migrate) if missing.
+# Set DEFAULT_USER_SEED=false in production after first bootstrap.
 DEFAULT_USER_SEED = _env_bool("DEFAULT_USER_SEED", False)
 DEFAULT_USER_EMAIL = os.environ.get("DEFAULT_USER_EMAIL", "").strip()
 DEFAULT_USER_USERNAME = os.environ.get("DEFAULT_USER_USERNAME", "").strip()

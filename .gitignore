@@ -1,5 +1,4 @@
 # Environments
-.env
 .venv
 env/
 venv/
@@ -28,3 +27,5 @@ __pycache__/
 **/migrations/*.py
 !**/migrations/__init__.py
 **/migrations/*.pyc
+config.bat
+node_modules

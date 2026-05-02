@@ -5,6 +5,5 @@ class UsersConfig(AppConfig):
     name = "users"
 
     def ready(self):
-        from .default_user import ensure_default_user
-
-        ensure_default_user()
+        # Register app signals (includes post_migrate admin seed hook).
+        from . import signals  # noqa: F401
