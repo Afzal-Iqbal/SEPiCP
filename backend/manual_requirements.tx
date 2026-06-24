@@ -1,0 +1,12 @@
+django==4.2.16
+pandas
+numpy
+matplotlib
+mysqlclient
+Pymysql
+djangorestframework
+django-cors-headers
+djangorestframework-simplejwt
+scikit-learn
+seaborn
+openpyxl

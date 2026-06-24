@@ -254,3 +254,5 @@ django.db.utils.OperationalError: (1054, "Unknown column 'datasets.original_data
 [2026-06-24 01:16:54,060] ERROR django.request: Internal Server Error: /api/datasets/upload/
 [2026-06-24 01:18:30,436] ERROR django.request: Internal Server Error: /api/datasets/upload/
 [2026-06-24 01:50:30,368] ERROR django.request: Internal Server Error: /api/analysis/regression/
+[2026-06-24 20:29:13,818] ERROR django.request: Internal Server Error: /api/datasets/upload/
+[2026-06-24 20:29:15,462] ERROR django.request: Internal Server Error: /api/datasets/upload/
