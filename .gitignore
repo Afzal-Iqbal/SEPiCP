@@ -3,9 +3,7 @@
 env/
 venv/
 ENV/
-.env
 *.env
-.env.*
 
 # Frontend build output (Vite → Django static/site)
 static/site/

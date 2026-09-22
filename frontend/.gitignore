@@ -26,4 +26,6 @@ node_modules/
 dist/
 build/
 .env
-
+logs/
+frontend/logs/
+backend/logs/

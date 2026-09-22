@@ -361,7 +361,7 @@ export default function StudentSurveyPage() {
     const payload = sanitizePayload(STUDENT_FIELDS, formData);
     try {
       let result;
-      if (isEditing) {
+      if (isEditing || editToken) {
         result = await updateStudentSurvey(editToken, {
           ...payload,
           publish,
