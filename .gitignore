@@ -6,6 +6,7 @@ ENV/
 *.env
 
 # Frontend build output (Vite → Django static/site)
+backend/static/site/
 static/site/
 
 # collectstatic
