@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { apiUrl } from '../lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   GraduationCap, BookOpen, Lock, Mail, User, Eye, EyeOff,
@@ -339,7 +340,7 @@ export default function AuthPage() {
     if (password.length < 8)    { setError('Password must be at least 8 characters.'); return; }
     setLoading(true);
     try {
-      const res  = await fetch('http://127.0.0.1:8080/api/register/', {
+      const res  = await fetch(apiUrl('/register/'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

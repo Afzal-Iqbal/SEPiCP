@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { apiUrl } from '../lib/api';
 
 const AuthContext = createContext(undefined);
 
@@ -94,7 +95,7 @@ export const AuthProvider = ({ children }) => {
     try {
       console.log("Login Payload Sent:", { email, password });
       
-      const tokenRes = await fetch("http://127.0.0.1:8080/api/login/", {
+      const tokenRes = await fetch(apiUrl('/login/'), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -107,7 +108,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem("refresh", tokenData.refresh);
 
       // Fetch profile to get role
-      const profileRes = await fetch("http://127.0.0.1:8080/api/profile/", {
+      const profileRes = await fetch(apiUrl('/profile/'), {
         headers: { Authorization: `Bearer ${tokenData.access}` },
       });
       const profileData = await profileRes.json();

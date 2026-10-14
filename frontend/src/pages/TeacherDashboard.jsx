@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Users, TrendingUp, Copy, CheckCircle, PlusCircle, FileText, AlertCircle, BarChart3 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { convertCourseToDataset } from '../api/surveyApi';
+import { apiUrl } from '../lib/api';
 
 export default function TeacherDashboard() {
   const [data, setData] = useState(null);
@@ -44,7 +45,7 @@ export default function TeacherDashboard() {
 
   useEffect(() => {
     const token = localStorage.getItem('access');
-    fetch('http://127.0.0.1:8080/api/teacher/dashboard/', {
+    fetch(apiUrl('/teacher/dashboard/'), {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.json())

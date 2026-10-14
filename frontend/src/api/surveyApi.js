@@ -1,5 +1,5 @@
 // frontend/src/api/surveyApi.js
-const BASE = "http://127.0.0.1:8080/api";
+import { apiUrl } from '../lib/api';
 
 function authHeaders() {
   const token = localStorage.getItem("access");
@@ -12,7 +12,7 @@ function authHeaders() {
 // ── Instructor ────────────────────────────────────────────────────────────────
 
 export async function submitInstructorSurvey(data) {
-  const res = await fetch(`${BASE}/survey/instructor/`, {
+  const res = await fetch(apiUrl('/survey/instructor/'), {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(data),
@@ -23,7 +23,7 @@ export async function submitInstructorSurvey(data) {
 }
 
 export async function publishInstructorSurvey(surveyId) {
-  const res = await fetch(`${BASE}/survey/instructor/${surveyId}/publish/`, {
+  const res = await fetch(apiUrl(`/survey/instructor/${surveyId}/publish/`), {
     method: "POST",
     headers: authHeaders(),
   });
@@ -33,7 +33,7 @@ export async function publishInstructorSurvey(surveyId) {
 }
 
 export async function getMyInstructorSurveys() {
-  const res = await fetch(`${BASE}/survey/instructor/`, {
+  const res = await fetch(apiUrl('/survey/instructor/'), {
     headers: authHeaders(),
   });
   const json = await res.json();
@@ -42,7 +42,7 @@ export async function getMyInstructorSurveys() {
 }
 
 export async function updateInstructorSurvey(surveyId, data) {
-  const res = await fetch(`${BASE}/survey/instructor/${surveyId}/`, {
+  const res = await fetch(apiUrl(`/survey/instructor/${surveyId}/`), {
     method: "PATCH",
     headers: authHeaders(),
     body: JSON.stringify(data),
@@ -55,14 +55,14 @@ export async function updateInstructorSurvey(surveyId, data) {
 // ── Student (anonymous) ───────────────────────────────────────────────────────
 
 export async function lookupCourseCode(courseCode) {
-  const res = await fetch(`${BASE}/survey/student/lookup/?course_code=${encodeURIComponent(courseCode)}`);
+  const res = await fetch(apiUrl(`/survey/student/lookup/?course_code=${encodeURIComponent(courseCode)}`));
   const json = await res.json();
   if (!res.ok) throw json;
   return json; // { survey_id, course_code, instructor_name, course_name, department, semester }
 }
 
 export async function submitStudentSurvey(data) {
-  const res = await fetch(`${BASE}/survey/student/submit/`, {
+  const res = await fetch(apiUrl('/survey/student/submit/'), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -77,14 +77,14 @@ export async function loadStudentSurvey(token) {
 }
 
 export async function getStudentSurveyByToken(token) {
-  const res = await fetch(`${BASE}/survey/student/edit/${token}/`);
+  const res = await fetch(apiUrl(`/survey/student/edit/${token}/`));
   const json = await res.json();
   if (!res.ok) throw json;
   return json;
 }
 
 export async function updateStudentSurvey(token, data) {
-  const res = await fetch(`${BASE}/survey/student/edit/${token}/`, {
+  const res = await fetch(apiUrl(`/survey/student/edit/${token}/`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -97,7 +97,7 @@ export async function updateStudentSurvey(token, data) {
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 export async function getAllSurveysAdmin() {
-  const res = await fetch(`${BASE}/admin/surveys/`, {
+  const res = await fetch(apiUrl('/admin/surveys/'), {
     headers: authHeaders(),
   });
   const json = await res.json();
@@ -106,7 +106,7 @@ export async function getAllSurveysAdmin() {
 }
 
 export async function exportAdminSurveysExcel(type) {
-  const res = await fetch(`${BASE}/admin/surveys/export/?type=${type}`, {
+  const res = await fetch(apiUrl(`/admin/surveys/export/?type=${type}`), {
     headers: authHeaders(),
   });
   if (!res.ok) {
@@ -125,7 +125,7 @@ export async function exportAdminSurveysExcel(type) {
 }
 
 export async function convertAdminSurveysToDataset(type) {
-  const res = await fetch(`${BASE}/admin/surveys/to-dataset/?type=${type}`, {
+  const res = await fetch(apiUrl(`/admin/surveys/to-dataset/?type=${type}`), {
     method: "POST",
     headers: authHeaders(),
   });
@@ -135,7 +135,7 @@ export async function convertAdminSurveysToDataset(type) {
 }
 
 export async function convertCourseToDataset(courseId, type = 'student') {
-  const res = await fetch(`${BASE}/admin/surveys/to-dataset/?course_id=${courseId}&type=${type}`, {
+  const res = await fetch(apiUrl(`/admin/surveys/to-dataset/?course_id=${courseId}&type=${type}`), {
     method: "POST",
     headers: authHeaders(),
   });
@@ -145,7 +145,7 @@ export async function convertCourseToDataset(courseId, type = 'student') {
 }
 
 export async function getAdminSurveyDetail(surveyId) {
-  const res = await fetch(`${BASE}/admin/surveys/${surveyId}/`, {
+  const res = await fetch(apiUrl(`/admin/surveys/${surveyId}/`), {
     headers: authHeaders(),
   });
   const json = await res.json();
@@ -154,7 +154,7 @@ export async function getAdminSurveyDetail(surveyId) {
 }
 
 export async function getInstructorSurveyDetail(surveyId) {
-  const res = await fetch(`${BASE}/survey/instructor/${surveyId}/`, {
+  const res = await fetch(apiUrl(`/survey/instructor/${surveyId}/`), {
     headers: authHeaders(),
   });
   const json = await res.json();
