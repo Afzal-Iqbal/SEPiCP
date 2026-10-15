@@ -10,8 +10,10 @@ import {
   ChevronRight,
   Database,
   FileText,
+  Bot,
   Menu,
-  X
+  X,
+  PlusCircle
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +27,9 @@ const Sidebar = () => {
 
     const menuItems = [
     { icon: LayoutDashboard, label: 'Dashboard', path: '/', roles: ['student', 'admin'] },
+    { icon: LayoutDashboard, label: 'Dashboard', path: '/teacher/dashboard', roles: ['teacher'] },
+    { icon: PlusCircle, label: 'New Evaluation', path: '/teacher', roles: ['teacher'] },
+    { icon: Bot, label: 'Research Assistant', path: '/assistant', roles: ['student', 'admin', 'teacher'] },
     { icon: Upload, label: 'Upload Data', path: '/upload', roles: ['student', 'admin'] },
     { icon: BarChart3, label: 'Analysis', path: '/analysis', roles: ['student', 'admin'] },
     { icon: FileText, label: 'Results', path: '/results', roles: ['student', 'admin'] },

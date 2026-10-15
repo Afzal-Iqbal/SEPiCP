@@ -4,6 +4,15 @@ from django.contrib.auth.models import AbstractUser
 # pyrefly: ignore [missing-import]
 from django.db import models
 import uuid
+import random
+import string
+
+
+def generate_short_token(length=5):
+    """Generates a 5-character uppercase alphanumeric token (e.g. 'ST5X8')."""
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choices(chars, k=length))
+
 
 
 class User(AbstractUser):
@@ -67,8 +76,8 @@ class InstructorSurvey(models.Model):
     STATUS_CHOICES   = [(STATUS_DRAFT, 'Draft'), (STATUS_PUBLISHED, 'Published')]
 
     # ── Meta fields ───────────────────────────────────────────────────────────
-    teacher     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='instructor_surveys')
-    course_code = models.CharField(max_length=12, unique=True, blank=True)
+    teacher     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='instructor_surveys', db_column='teacher_id')
+    course_code = models.CharField(max_length=12, unique=True, blank=True, db_index=True)
     status      = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     created_at  = models.DateTimeField(auto_now_add=True)
     updated_at  = models.DateTimeField(auto_now=True)
@@ -169,10 +178,16 @@ class InstructorSurvey(models.Model):
 
     class Meta:
         db_table = "instructor_surveys"
+        constraints = [
+            models.UniqueConstraint(fields=['teacher', 'course_code'], name='unique_teacher_course_code')
+        ]
 
     def save(self, *args, **kwargs):
         if not self.course_code:
-            self.course_code = uuid.uuid4().hex[:8].upper()
+            code = generate_short_token(5)
+            while InstructorSurvey.objects.filter(course_code=code).exists():
+                code = generate_short_token(5)
+            self.course_code = code
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -188,7 +203,7 @@ class StudentSurvey(models.Model):
     instructor_survey = models.ForeignKey(
         InstructorSurvey, on_delete=models.CASCADE, related_name='student_surveys'
     )
-    edit_token   = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    edit_token   = models.CharField(max_length=10, default=generate_short_token, unique=True, editable=False)
     is_published = models.BooleanField(default=False)
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at   = models.DateTimeField(auto_now=True)

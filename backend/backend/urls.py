@@ -9,6 +9,7 @@ from .spa_views import spa_catch_all
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("users.urls")),
+    path("api/assistant/", include("assistant.urls")),
 ]
 
 _site_dist = Path(__file__).resolve().parent.parent / "static" / "site"

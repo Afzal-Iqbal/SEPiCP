@@ -1,10 +1,12 @@
-# Environments
+# Environments & Secrets
 .venv
 env/
 venv/
 ENV/
+*.env
 
 # Frontend build output (Vite → Django static/site)
+backend/static/site/
 static/site/
 
 # collectstatic
@@ -17,6 +19,8 @@ db.sqlite3
 # Runtime logs (keep logs/.gitkeep for IIS / HttpPlatformHandler)
 logs/*.log
 logs/*.txt
+backend/logs/*.log
+*.log
 
 # Python cache files
 __pycache__/
@@ -30,3 +34,8 @@ __pycache__/
 
 config.bat
 node_modules
+
+# ChromaDB & Vector Indexes (too large for GitHub, generated locally via ingest.py)
+chroma_db/
+**/chroma_db/
+*.bin

@@ -348,6 +348,7 @@ export default function AuthPage() {
           email: email.trim(),
           password,
           role: 'teacher',
+          first_name: name.trim(),
         }),
       });
       const data = await res.json();

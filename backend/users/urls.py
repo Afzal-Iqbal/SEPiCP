@@ -14,6 +14,7 @@ from .views import (
     PCAAnalysisView,
     BasicAnalysisView,
     UserDatasetListView,
+    UserDatasetDetailView,
     # Survey views
     InstructorSurveyView,
     InstructorSurveyDetailView,
@@ -38,6 +39,7 @@ urlpatterns = [
     path("profile/",           ProfileView.as_view()),
     path("datasets/upload/",   UploadDatasetView.as_view()),
     path("datasets/",          UserDatasetListView.as_view()),
+    path("datasets/<int:pk>/", UserDatasetDetailView.as_view()),
 
     # ── Analysis ──────────────────────────────────────────────────────────────
     path("analysis/regression/", MultipleLinearRegressionView.as_view()),

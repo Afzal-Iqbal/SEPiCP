@@ -364,13 +364,6 @@ export const STUDENT_FIELDS = [
   },
   {
     section:   "Teaching Methods (% of time used by professor)",
-    name:      "methods_s_16_text",
-    label:     "Any other method? (1) — Please describe",
-    type:      "text",
-    required:  false,
-  },
-  {
-    section:   "Teaching Methods (% of time used by professor)",
     name:      "methods_s_17",
     label:     "Any other method? (2)",
     type:      "percentage",
@@ -380,26 +373,12 @@ export const STUDENT_FIELDS = [
   },
   {
     section:   "Teaching Methods (% of time used by professor)",
-    name:      "methods_s_17_text",
-    label:     "Any other method? (2) — Please describe",
-    type:      "text",
-    required:  false,
-  },
-  {
-    section:   "Teaching Methods (% of time used by professor)",
     name:      "methods_s_18",
     label:     "Any other method? (3)",
     type:      "percentage",
     required:  false,
     min:       0,
     max:       100,
-  },
-  {
-    section:   "Teaching Methods (% of time used by professor)",
-    name:      "methods_s_18_text",
-    label:     "Any other method? (3) — Please describe",
-    type:      "text",
-    required:  false,
   },
 
   // ─────────────────────────────────────────────────────────────────────────

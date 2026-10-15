@@ -78,7 +78,7 @@ const TopBar = () => {
 
     // Command palette list
     const commands = [
-        { label: 'Go to Dashboard', path: '/', icon: LayoutDashboard, category: 'Navigation' },
+        { label: 'Go to Dashboard', path: user?.role === 'teacher' ? '/teacher/dashboard' : '/', icon: LayoutDashboard, category: 'Navigation' },
         { label: 'Upload Data File', path: '/upload', icon: Upload, category: 'Data' },
         { label: 'Configure Analysis Model', path: '/analysis', icon: BarChart3, category: 'Analysis' },
         { label: 'View Results Report', path: '/results', icon: FileText, category: 'Analysis' },

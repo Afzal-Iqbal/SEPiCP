@@ -117,7 +117,7 @@ export const AuthProvider = ({ children }) => {
 
       const loggedInUser = {
         id:    profileData.id,
-        name:  profileData.username,
+        name:  profileData.first_name || profileData.username,
         email: profileData.email,
         role:  userRole,
       };

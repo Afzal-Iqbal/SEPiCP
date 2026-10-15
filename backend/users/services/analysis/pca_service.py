@@ -35,29 +35,50 @@ def perform_pca_analysis(data, selected_columns, n_components=None, variance_thr
         # 1. Data Preparation
         df = pd.DataFrame(data)
 
-        # Select only the specified columns
-        df_selected = df[selected_columns].copy()
+        # Select only the specified columns that exist in data
+        valid_cols = [c for c in selected_columns if c in df.columns]
+        if not valid_cols:
+            raise ValueError("None of the selected columns exist in the dataset")
 
-        # Convert all columns to numeric
+        df_selected = df[valid_cols].copy()
+
+        likert_map = {
+            'never': 1, 'rarely': 2, 'sometimes': 3,
+            'about half the time': 3, 'most of the time': 4,
+            'almost always': 5, 'always': 5,
+            'strongly disagree': 1, 'disagree': 2, 'neutral': 3,
+            'agree': 4, 'strongly agree': 5
+        }
+
+        # Convert columns to numeric, label-encoding categorical features if necessary
+        from sklearn.preprocessing import LabelEncoder
         for col in df_selected.columns:
-            df_selected[col] = pd.to_numeric(df_selected[col], errors='coerce')
+            series = df_selected[col].replace(["nan", "Nan", "NAN", "Unknown", "N/A", "N\\A", "", None], np.nan)
+            
+            if series.dtype == 'object':
+                mapped = series.astype(str).str.strip().str.lower().map(likert_map)
+                if mapped.notna().sum() > (len(series) * 0.3):
+                    series = mapped
+
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if numeric_series.notna().sum() > (len(series) * 0.3):
+                df_selected[col] = numeric_series
+            else:
+                le = LabelEncoder()
+                df_selected[col] = le.fit_transform(series.fillna("Missing").astype(str))
 
         # Handle missing values
-        if missing_values == 'drop':
-            df_selected = df_selected.dropna()
-
-        elif missing_values == 'mean':
-            imputer = SimpleImputer(strategy='mean')
-
-            if not df_selected.empty:
+        if missing_values == 'mean':
+            if df_selected.isnull().any().any():
+                imputer = SimpleImputer(strategy='mean')
                 df_selected = pd.DataFrame(
                     imputer.fit_transform(df_selected),
                     columns=df_selected.columns,
                     index=df_selected.index
                 )
-
-        # Remove remaining NaN
-        df_selected = df_selected.dropna()
+        else:
+            # Default 'drop'
+            df_selected = df_selected.dropna()
 
         if df_selected.empty:
             raise ValueError("No valid numerical data found after preprocessing")

@@ -5,7 +5,7 @@ import { lookupCourseCode, submitStudentSurvey, loadStudentSurvey, updateStudent
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   CheckCircle, AlertTriangle, GraduationCap,
-  ChevronRight, ArrowLeft, Copy, XCircle,
+  ChevronRight, ArrowLeft, Copy, XCircle, Save, Info, X
 } from 'lucide-react';
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -40,6 +40,25 @@ function validateForm(fields, formData) {
     }
   });
   return errors;
+}
+
+// ── Payload sanitizer ─────────────────────────────────────────────────────────
+function sanitizePayload(fields, formData) {
+  const clean = { ...formData };
+  fields.forEach(field => {
+    const val = clean[field.name];
+    if (val === '' || val === undefined || val === null) {
+      if (['number', 'percentage', 'rating10', 'rating13'].includes(field.type)) {
+        clean[field.name] = null;
+      } else {
+        clean[field.name] = '';
+      }
+    } else if (['number', 'percentage', 'rating10', 'rating13'].includes(field.type)) {
+      const parsed = parseFloat(val);
+      clean[field.name] = isNaN(parsed) ? null : parsed;
+    }
+  });
+  return clean;
 }
 
 // ── Field renderer with error state ──────────────────────────────────────────
@@ -100,26 +119,8 @@ function FieldInput({ field, value, onChange, hasError, onFix }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-const generateDummyData = (fields) => {
-  return Object.fromEntries(fields.map(f => {
-    let val = '';
-    if (f.type === 'text' || f.type === 'textarea') {
-      val = `Test ${f.label || f.name}`;
-    } else if (f.type === 'email') {
-      val = `student_${Math.floor(Math.random()*1000)}@example.com`;
-    } else if (f.type === 'number') {
-      val = Math.floor(Math.random() * 50) + 10;
-    } else if (f.type === 'percentage') {
-      val = Math.floor(Math.random() * 100);
-    } else if (f.type === 'rating10') {
-      val = Math.floor(Math.random() * 10) + 1;
-    } else if (f.type === 'rating13') {
-      val = Math.floor(Math.random() * 13) + 1;
-    } else if (f.type === 'select' && f.options?.length > 0) {
-      val = f.options[Math.floor(Math.random() * f.options.length)];
-    }
-    return [f.name, val];
-  }));
+const createCleanEmptyState = (fields) => {
+  return Object.fromEntries(fields.map(f => [f.name, '']));
 };
 
 export default function StudentSurveyPage() {
@@ -134,9 +135,22 @@ export default function StudentSurveyPage() {
   const [isEditing, setIsEditing]   = useState(false);
   const [activeSectionIdx, setActiveSectionIdx] = useState(0);
 
-  const initialState = generateDummyData(STUDENT_FIELDS);
+  // Anti-Bot Math CAPTCHA state
+  const [num1] = useState(Math.floor(Math.random() * 9) + 1);
+  const [num2] = useState(Math.floor(Math.random() * 9) + 1);
+  const [captchaInput, setCaptchaInput] = useState('');
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaError, setCaptchaError] = useState('');
+
+  const initialState = createCleanEmptyState(STUDENT_FIELDS);
   const [formData, setFormData] = useState(initialState);
   const [errors, setErrors]     = useState({});
+  const [toast, setToast]       = useState(null);
+
+  const showToast = (type, message) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 4500);
+  };
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -155,10 +169,19 @@ export default function StudentSurveyPage() {
   // Step 1 — verify course code
   const handleLookup = async () => {
     setApiError('');
-    if (!courseCode.trim()) { setApiError('Please enter a course code.'); return; }
+    const code = courseCode.trim().toUpperCase();
+    if (!code) { setApiError('Please enter a course code.'); return; }
+
+    // Check if student has already completed an evaluation for this course code
+    const alreadyCompleted = localStorage.getItem(`student_completed_${code}`);
+    if (alreadyCompleted) {
+      setApiError('You have already submitted an evaluation for this course. Multiple submissions are not permitted.');
+      return;
+    }
+
     setLoading(true);
     try {
-      const info = await lookupCourseCode(courseCode.trim().toUpperCase());
+      const info = await lookupCourseCode(code);
       setCourseInfo(info);
       setStep('confirm');
       setActiveSectionIdx(0);
@@ -192,34 +215,117 @@ export default function StudentSurveyPage() {
       setEditToken(editTokenInput.trim());
       setIsEditing(true);
       setStep('fill');
-      setActiveSectionIdx(0);
+
+      // Check if local saved tab index exists for this token
+      const localDraft = localStorage.getItem(`student_draft_${editTokenInput.trim()}`);
+      if (localDraft) {
+        try {
+          const { activeSectionIdx: savedIdx } = JSON.parse(localDraft);
+          if (typeof savedIdx === 'number' && savedIdx >= 0 && savedIdx < STUDENT_SECTIONS.length) {
+            setActiveSectionIdx(savedIdx);
+            showToast('info', `ℹ️ Resumed evaluation at Section "${STUDENT_SECTIONS[savedIdx]}".`);
+          } else {
+            setActiveSectionIdx(0);
+          }
+        } catch (e) { setActiveSectionIdx(0); }
+      } else {
+        setActiveSectionIdx(0);
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setApiError(err.error || 'Invalid or expired edit token, or response is already published.');
+      showToast('error', err.error || 'Failed to load survey token.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Background Auto-Save for student drafts
-  const autoSaveDraft = async () => {
+  // Manual & Background Save Draft function
+  const handleSaveAsDraft = async () => {
+    setLoading(true);
+    const currentSection = STUDENT_SECTIONS[activeSectionIdx] || STUDENT_SECTIONS[0];
+    const payload = sanitizePayload(STUDENT_FIELDS, formData);
     try {
       let result;
-      // If the student loaded an existing draft, or we already created a draft in a previous step:
       if (isEditing || editToken) {
         result = await updateStudentSurvey(editToken, {
-          ...formData,
+          ...payload,
           publish: false,
         });
       } else {
-        // Create a new draft survey record in the DB
         result = await submitStudentSurvey({
-          ...formData,
+          ...payload,
           course_code: courseCode.trim().toUpperCase(),
           publish: false,
         });
-        // Save the returned editToken in state so subsequent sections update the same record
         setEditToken(result.edit_token);
+      }
+
+      const activeToken = editToken || result?.edit_token;
+      const draftData = JSON.stringify({
+        formData,
+        activeSectionIdx,
+        timestamp: Date.now()
+      });
+      if (activeToken) {
+        localStorage.setItem(`student_draft_${activeToken}`, draftData);
+      }
+      localStorage.setItem('student_draft_latest', draftData);
+
+      showToast('success', `💾 Draft saved on Section "${currentSection}"! Returning to summary...`);
+      setTimeout(() => {
+        setStep('done');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }, 600);
+    } catch (err) {
+      console.warn("Save draft failed:", err);
+      showToast('error', 'Failed to save draft.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Auto-Sync student draft and section index to localStorage ───────────────
+  React.useEffect(() => {
+    if (step === 'fill') {
+      const activeToken = editToken || courseCode;
+      const draftData = JSON.stringify({
+        formData,
+        activeSectionIdx,
+        timestamp: Date.now()
+      });
+      if (activeToken) {
+        localStorage.setItem(`student_draft_${activeToken}`, draftData);
+      }
+      localStorage.setItem('student_draft_latest', draftData);
+    }
+  }, [formData, activeSectionIdx, editToken, courseCode, step]);
+
+  // Background Auto-Save for student drafts
+  const autoSaveDraft = async () => {
+    const payload = sanitizePayload(STUDENT_FIELDS, formData);
+    try {
+      let result;
+      if (isEditing || editToken) {
+        result = await updateStudentSurvey(editToken, {
+          ...payload,
+          publish: false,
+        });
+      } else {
+        result = await submitStudentSurvey({
+          ...payload,
+          course_code: courseCode.trim().toUpperCase(),
+          publish: false,
+        });
+        setEditToken(result.edit_token);
+      }
+      const activeToken = editToken || result?.edit_token;
+      if (activeToken) {
+        localStorage.setItem(`student_draft_${activeToken}`, JSON.stringify({
+          formData,
+          activeSectionIdx,
+          timestamp: Date.now()
+        }));
       }
     } catch (err) {
       console.warn("Background auto-save failed:", err);
@@ -252,22 +358,24 @@ export default function StudentSurveyPage() {
     }
 
     setLoading(true);
+    const payload = sanitizePayload(STUDENT_FIELDS, formData);
     try {
       let result;
-      if (isEditing) {
+      if (isEditing || editToken) {
         result = await updateStudentSurvey(editToken, {
-          ...formData,
+          ...payload,
           publish,
         });
       } else {
         result = await submitStudentSurvey({
-          ...formData,
+          ...payload,
           course_code: courseCode.trim().toUpperCase(),
           publish,
         });
       }
       
       if (publish) {
+        localStorage.setItem(`student_completed_${courseCode.trim().toUpperCase()}`, 'true');
         setStep('published_done');
       } else {
         setEditToken(result.edit_token);
@@ -400,11 +508,11 @@ export default function StudentSurveyPage() {
               onBlur={e => { if (!(apiError && editTokenInput)) e.target.style.borderColor = '#e2e8f0'; }}
             />
 
-            <button onClick={handleLoadToken} disabled={loading || editTokenInput.length < 10}
+            <button onClick={handleLoadToken} disabled={loading || editTokenInput.length < 4}
               style={{ width: '100%', padding: '16px', borderRadius: 14,
-                background: editTokenInput.length >= 10 ? '#0284c7' : '#94a3b8',
+                background: editTokenInput.length >= 4 ? '#0284c7' : '#94a3b8',
                 color: '#fff', border: 'none', fontWeight: 900, fontSize: 16, marginTop: 'auto',
-                cursor: editTokenInput.length >= 10 ? 'pointer' : 'not-allowed',
+                cursor: editTokenInput.length >= 4 ? 'pointer' : 'not-allowed',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 transition: 'background 0.2s' }}>
               {loading && editTokenInput ? 'Loading...' : 'Resume Form'}
@@ -425,30 +533,80 @@ export default function StudentSurveyPage() {
       <div style={{ minHeight: '100vh', background: '#f8fafc',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
         <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-          style={{ width: '100%', maxWidth: 520, background: '#fff',
-            borderRadius: 28, padding: '48px 40px',
+          style={{ width: '100%', maxWidth: 560, background: '#fff',
+            borderRadius: 28, padding: '40px 36px',
             boxShadow: '0 20px 60px rgba(0,0,0,0.08)', border: '1px solid #e2e8f0' }}>
-          <h2 style={{ fontSize: 22, fontWeight: 900, color: '#0f172a', marginBottom: 8 }}>
+          
+          <h2 style={{ fontSize: 22, fontWeight: 900, color: '#0f172a', marginBottom: 6 }}>
             Confirm Course Details
           </h2>
-          <p style={{ color: '#64748b', fontSize: 14, marginBottom: 28 }}>
-            Verify this is the correct course before filling the survey.
-          </p>
+
+          {/* 🔒 Privacy Assurance Banner */}
+          <div style={{ background: '#fffbeb', border: '1.5px solid #fde68a', borderRadius: 16, padding: 14, marginBottom: 20, display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center', shrink: 0 }}>
+              <CheckCircle size={20} color="#b45309" />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 800, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.5 }}>Privacy Protected</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#b45309', marginTop: 2 }}>
+                "We shall not record your personal information." Your responses are 100% anonymous.
+              </div>
+            </div>
+          </div>
+
           <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd',
-            borderRadius: 16, padding: '24px', marginBottom: 32 }}>
+            borderRadius: 16, padding: '20px', marginBottom: 24 }}>
             {[['Instructor', courseInfo?.instructor_name],
               ['Course', courseInfo?.course_name],
               ['University', courseInfo?.department],
               ['Semester', courseInfo?.semester],
-              ['Code', courseCode]].map(([label, val]) => val ? (
-              <div key={label} style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+              ['Survey Code', courseCode]].map(([label, val]) => val ? (
+              <div key={label} style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
                 <span style={{ fontWeight: 700, color: '#0369a1', minWidth: 120, fontSize: 13 }}>
                   {label}
                 </span>
-                <span style={{ color: '#0f172a', fontSize: 13 }}>{val}</span>
+                <span style={{ color: '#0f172a', fontSize: 13, fontWeight: 800 }}>{val}</span>
               </div>
             ) : null)}
           </div>
+
+          {/* 🤖 Anti-Bot Math CAPTCHA Challenge */}
+          <div style={{ background: '#faf5ff', border: '1.5px solid #e9d5ff', borderRadius: 16, padding: 18, marginBottom: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: '#6b21a8', textTransform: 'uppercase', marginBottom: 6 }}>
+              Anti-Bot Verification
+            </div>
+            <div style={{ fontSize: 13, color: '#7e22ce', marginBottom: 12 }}>
+              Solve this challenge to verify you are human:
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ background: '#fff', padding: '8px 16px', borderRadius: 10, border: '1px solid #d8b4fe', fontWeight: 900, fontSize: 16, color: '#581c87' }}>
+                {num1} + {num2} = ?
+              </span>
+              <input
+                type="number"
+                placeholder="Ans"
+                value={captchaInput}
+                onChange={e => setCaptchaInput(e.target.value)}
+                style={{ width: 80, padding: '10px', borderRadius: 10, border: '1.5px solid #c084fc', textAlign: 'center', fontWeight: 800, fontSize: 15 }}
+              />
+              <button
+                onClick={() => {
+                  if (parseInt(captchaInput, 10) === num1 + num2) {
+                    setCaptchaVerified(true);
+                    setCaptchaError('');
+                  } else {
+                    setCaptchaError('Incorrect answer');
+                  }
+                }}
+                style={{ padding: '10px 16px', borderRadius: 10, background: '#7e22ce', color: '#fff', border: 'none', fontWeight: 800, cursor: 'pointer' }}
+              >
+                Verify
+              </button>
+            </div>
+            {captchaVerified && <div style={{ fontSize: 12, fontWeight: 800, color: '#16a34a', marginTop: 8 }}>✓ Verification complete!</div>}
+            {captchaError && <div style={{ fontSize: 12, fontWeight: 800, color: '#dc2626', marginTop: 8 }}>{captchaError}</div>}
+          </div>
+
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={() => { setStep('enter_code'); setApiError(''); }}
               style={{ padding: '14px 20px', borderRadius: 12, border: '1px solid #e2e8f0',
@@ -456,11 +614,15 @@ export default function StudentSurveyPage() {
                 display: 'flex', alignItems: 'center', gap: 6 }}>
               <ArrowLeft size={16} /> Back
             </button>
-            <button onClick={() => setStep('fill')}
+            <button
+              disabled={!captchaVerified}
+              onClick={() => setStep('fill')}
               style={{ flex: 1, padding: '14px 24px', borderRadius: 12, border: 'none',
-                background: '#1e3a8a', color: '#fff', cursor: 'pointer',
+                background: captchaVerified ? '#1e3a8a' : '#94a3b8', color: '#fff',
+                cursor: captchaVerified ? 'pointer' : 'not-allowed',
                 fontWeight: 700, fontSize: 15,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+            >
               Yes, Fill My Survey <ChevronRight size={18} />
             </button>
           </div>
@@ -470,10 +632,22 @@ export default function StudentSurveyPage() {
   }
 
   if (step === 'fill') {
-    const required     = STUDENT_FIELDS.filter(f => f.required);
-    const filled       = required.filter(f => formData[f.name] !== '').length;
-    const pct          = Math.round((filled / required.length) * 100);
-    const isFormReady  = filled === required.length;
+    const totalAllFields   = STUDENT_FIELDS.length;
+    const filledAllFields  = STUDENT_FIELDS.filter(f => formData[f.name] !== undefined && formData[f.name] !== null && formData[f.name] !== '').length;
+    const overallPct       = totalAllFields > 0 ? Math.round((filledAllFields / totalAllFields) * 100) : 0;
+
+    const activeSecName   = STUDENT_SECTIONS[activeSectionIdx] || STUDENT_SECTIONS[0];
+    const activeSecFields = STUDENT_FIELDS.filter(f => f.section === activeSecName);
+    const activeSecTotal  = activeSecFields.length;
+    const activeSecFilled = activeSecFields.filter(f => {
+      const v = formData[f.name];
+      return v !== undefined && v !== null && v !== '';
+    }).length;
+    const activeSecPct    = activeSecTotal > 0 ? Math.round((activeSecFilled / activeSecTotal) * 100) : 0;
+
+    const overallRequired = STUDENT_FIELDS.filter(f => f.required);
+    const overallFilled   = overallRequired.filter(f => formData[f.name] !== '' && formData[f.name] !== undefined && formData[f.name] !== null).length;
+    const isFormReady     = overallFilled >= overallRequired.length;
 
     return (
       <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 20px 100px' }}>
@@ -506,20 +680,107 @@ export default function StudentSurveyPage() {
             </div>
           </div>
 
-          {/* Progress */}
+          {/* Overall Form Completion Progress */}
           <div style={{ marginTop: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between',
-              fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
-              <span style={{ fontWeight: 700, color: '#1e3a8a' }}>
-                Section {activeSectionIdx + 1} of {STUDENT_SECTIONS.length}: {STUDENT_SECTIONS[activeSectionIdx]}
+              fontSize: 12, color: '#64748b', marginBottom: 6 }}>
+              <span style={{ fontWeight: 800, color: '#0f172a' }}>
+                Overall Form Completion Progress
               </span>
-              <span>{filled} / {required.length} required fields filled ({pct}%)</span>
+              <span style={{ fontWeight: 800, color: overallPct === 100 ? '#16a34a' : '#1e3a8a' }}>
+                {filledAllFields} / {totalAllFields} attributes filled ({overallPct}%)
+              </span>
             </div>
-            <div style={{ height: 6, background: '#e2e8f0', borderRadius: 99 }}>
-              <div style={{ height: '100%', width: `${pct}%`,
-                background: pct === 100 ? '#16a34a' : '#1e3a8a',
+            <div style={{ height: 8, background: '#e2e8f0', borderRadius: 99 }}>
+              <div style={{ height: '100%', width: `${overallPct}%`,
+                background: overallPct === 100 ? '#16a34a' : '#1e3a8a',
                 borderRadius: 99, transition: 'width 0.3s' }} />
             </div>
+          </div>
+
+          {/* 🚀 Dynamic Section Completion Timeline with Visible Scrollbar */}
+          <div style={{
+            display: 'flex', gap: 10, overflowX: 'auto', padding: '14px 4px 14px 4px',
+            margin: '16px 0 12px 0',
+            scrollbarWidth: 'thin',
+            scrollbarColor: '#94a3b8 #f1f5f9'
+          }}>
+            {STUDENT_SECTIONS.map((secName, idx) => {
+              const secFields = STUDENT_FIELDS.filter(f => f.section === secName);
+              const total = secFields.length;
+              const secFilled = secFields.filter(f => {
+                const v = formData[f.name];
+                return v !== undefined && v !== null && v !== '';
+              }).length;
+              const secPct = total > 0 ? Math.round((secFilled / total) * 100) : 0;
+              const isComplete = total > 0 && secFilled === total;
+              const hasError = secFields.some(f => errors[f.name]);
+              const isActive = idx === activeSectionIdx;
+
+              let bg = '#f8fafc';
+              let borderColor = '#e2e8f0';
+              let textColor = '#64748b';
+              let badgeBg = '#cbd5e1';
+              let badgeColor = '#334155';
+
+              if (isActive) {
+                bg = '#eff6ff';
+                borderColor = '#1e3a8a';
+                textColor = '#1e3a8a';
+                badgeBg = '#1e3a8a';
+                badgeColor = '#ffffff';
+              } else if (hasError) {
+                bg = '#fef2f2';
+                borderColor = '#fecaca';
+                textColor = '#dc2626';
+                badgeBg = '#dc2626';
+                badgeColor = '#ffffff';
+              } else if (isComplete) {
+                bg = '#f0fdf4';
+                borderColor = '#bbf7d0';
+                textColor = '#15803d';
+                badgeBg = '#16a34a';
+                badgeColor = '#ffffff';
+              }
+
+              return (
+                <button
+                  key={secName}
+                  type="button"
+                  onClick={(e) => {
+                    setActiveSectionIdx(idx);
+                    e.currentTarget.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 14px', borderRadius: 99,
+                    background: bg, border: `1.5px solid ${borderColor}`,
+                    color: textColor, fontWeight: isActive ? 800 : 700,
+                    fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+                    transition: 'all 0.2s', flexShrink: 0,
+                    boxShadow: isActive ? '0 4px 12px rgba(30,58,138,0.12)' : 'none'
+                  }}
+                >
+                  <span style={{
+                    width: 20, height: 20, borderRadius: '50%',
+                    background: badgeBg, color: badgeColor,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 10, fontWeight: 900
+                  }}>
+                    {isComplete ? '✓' : idx + 1}
+                  </span>
+                  <span>{secName}</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 800,
+                    padding: '2px 6px', borderRadius: 99,
+                    background: isComplete ? '#dcfce7' : isActive ? '#dbeafe' : '#e2e8f0',
+                    color: isComplete ? '#166534' : isActive ? '#1e40af' : '#475569'
+                  }}>
+                    {secPct}%
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -561,6 +822,13 @@ export default function StudentSurveyPage() {
           const sectionHasError = sectionFields.some(f => errors[f.name]);
           const sIdx = activeSectionIdx;
 
+          const totalSec = sectionFields.length;
+          const secFilled = sectionFields.filter(f => {
+            const v = formData[f.name];
+            return v !== undefined && v !== null && v !== '';
+          }).length;
+          const secPct = totalSec > 0 ? Math.round((secFilled / totalSec) * 100) : 100;
+
           return (
             <motion.div key={section}
               initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }}
@@ -573,25 +841,40 @@ export default function StudentSurveyPage() {
                 transition: 'border-color 0.2s',
               }}>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: 8,
-                  background: sectionHasError ? '#fef2f2' : '#eff6ff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, fontWeight: 900,
-                  color: sectionHasError ? '#dc2626' : '#1e3a8a',
-                }}>
-                  {sIdx + 1}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 8,
+                    background: sectionHasError ? '#fef2f2' : '#eff6ff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 900,
+                    color: sectionHasError ? '#dc2626' : '#1e3a8a',
+                  }}>
+                    {sIdx + 1}
+                  </div>
+                  <h2 style={{ fontSize: 15, fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                    {section}
+                  </h2>
+                  {sectionHasError && (
+                    <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626',
+                      background: '#fef2f2', padding: '2px 8px', borderRadius: 99 }}>
+                      Has errors
+                    </span>
+                  )}
                 </div>
-                <h2 style={{ fontSize: 15, fontWeight: 800, color: '#0f172a', margin: 0 }}>
-                  {section}
-                </h2>
-                {sectionHasError && (
-                  <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626',
-                    background: '#fef2f2', padding: '2px 8px', borderRadius: 99 }}>
-                    Has errors
-                  </span>
-                )}
+
+                <span style={{ fontSize: 12, fontWeight: 800, color: secFilled === totalSec ? '#16a34a' : '#1e3a8a' }}>
+                  Section Progress: {secFilled} / {totalSec} filled ({secPct}%)
+                </span>
+              </div>
+
+              {/* Dynamic Section Progress Bar */}
+              <div style={{ height: 4, background: '#f1f5f9', borderRadius: 99, marginBottom: 24, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', width: `${secPct}%`,
+                  background: secPct === 100 ? '#16a34a' : '#1e3a8a',
+                  borderRadius: 99, transition: 'width 0.3s'
+                }} />
               </div>
 
               <div style={{
@@ -658,7 +941,7 @@ export default function StudentSurveyPage() {
         })()}
 
         {/* Wizard Controls */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginTop: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 24, flexWrap: 'wrap' }}>
           <button onClick={() => {
             if (activeSectionIdx > 0) {
               setActiveSectionIdx(prev => prev - 1);
@@ -676,6 +959,21 @@ export default function StudentSurveyPage() {
             <ArrowLeft size={16} /> Back
           </button>
 
+          {/* 💾 Save as Draft Button on Every Tab */}
+          <button
+            type="button"
+            onClick={handleSaveAsDraft}
+            disabled={loading}
+            style={{
+              padding: '14px 22px', borderRadius: 12, border: '1.5px solid #0284c7',
+              background: '#f0f9ff', color: '#0369a1', cursor: 'pointer',
+              fontWeight: 800, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8,
+              transition: 'all 0.2s'
+            }}
+          >
+            <Save size={16} /> {loading ? 'Saving...' : 'Save as Draft'}
+          </button>
+
           {activeSectionIdx < STUDENT_SECTIONS.length - 1 ? (
             <button
               type="button"
@@ -685,6 +983,10 @@ export default function StudentSurveyPage() {
                 const sectionErrors = validateForm(sectionFields, formData);
                 if (Object.keys(sectionErrors).length > 0) {
                   setErrors(prev => ({ ...prev, ...sectionErrors }));
+                  showToast('error', `Please fix ${Object.keys(sectionErrors).length} error(s) in Section "${section}" before proceeding.`);
+                  setTimeout(() => {
+                    document.querySelector('[data-field-error="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  }, 100);
                   return;
                 }
 
@@ -739,6 +1041,31 @@ export default function StudentSurveyPage() {
             </div>
           )}
         </div>
+
+        {/* 🔔 Toaster Notification */}
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              style={{
+                position: 'fixed', top: 24, right: 24, zIndex: 9999,
+                background: toast.type === 'error' ? '#fef2f2' : toast.type === 'success' ? '#f0fdf4' : '#f0f9ff',
+                border: toast.type === 'error' ? '1.5px solid #fecaca' : toast.type === 'success' ? '1.5px solid #86efac' : '1.5px solid #bae6fd',
+                color: toast.type === 'error' ? '#dc2626' : toast.type === 'success' ? '#166534' : '#0369a1',
+                borderRadius: 16, padding: '14px 20px', boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+                display: 'flex', alignItems: 'center', gap: 12, fontWeight: 800, fontSize: 14
+              }}
+            >
+              {toast.type === 'error' ? <AlertTriangle size={18} /> : toast.type === 'success' ? <CheckCircle size={18} /> : <Info size={18} />}
+              <span>{toast.message}</span>
+              <button onClick={() => setToast(null)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'inherit', marginLeft: 8 }}>
+                <X size={16} />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }

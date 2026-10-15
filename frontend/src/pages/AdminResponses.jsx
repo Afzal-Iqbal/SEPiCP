@@ -7,6 +7,7 @@ import {
   getAllSurveysAdmin,
   exportAdminSurveysExcel,
   convertAdminSurveysToDataset,
+  convertCourseToDataset,
   getAdminSurveyDetail
 } from '../api/surveyApi';
 import { Card, CardHeader, CardContent, CardTitle } from '../components/ui/card';
@@ -26,6 +27,47 @@ export default function AdminResponses() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('instructor'); // 'instructor' | 'student'
 
+  const handleAnalyzeIndividualCourse = async (courseId, courseCode, type = 'instructor_student') => {
+    try {
+      setError('');
+      setSuccess('');
+      const res = await convertCourseToDataset(courseId, type);
+      setSuccess(`Course ${courseCode} data loaded! Redirecting to Analysis…`);
+      if (res.data && res.data.length > 0) {
+        const name = res.name || `Course ${courseCode} - ${type === 'instructor' ? 'Instructor' : type === 'student' ? 'Student' : 'Combined'} Responses`;
+        const cols = (res.columns || Object.keys(res.data[0] || {})).map(key => ({
+          header: key.toUpperCase(),
+          accessorKey: key
+        }));
+
+        // Store course data with a dedicated key so AnalysisPage detects it directly
+        sessionStorage.setItem('course_direct_data', JSON.stringify(res.data));
+        sessionStorage.setItem('course_direct_name', name);
+        sessionStorage.setItem('course_direct_type', type);
+        sessionStorage.setItem('course_direct_id', String(courseId));
+        sessionStorage.setItem('course_direct_code', courseCode);
+
+        // Also store in uploaded slots for preview table compatibility
+        sessionStorage.setItem('uploaded_table_data', JSON.stringify(res.data));
+        sessionStorage.setItem('uploaded_columns', JSON.stringify(cols));
+        sessionStorage.setItem('uploaded_file_info', JSON.stringify({ name, size: 'Course Data' }));
+
+        // Clear DB dataset selection so AnalysisPage uses the direct course data
+        sessionStorage.removeItem('analysis_selected_dataset');
+        sessionStorage.removeItem('analysis_step');
+        sessionStorage.removeItem('analysis_xaxis');
+        sessionStorage.removeItem('analysis_yaxis');
+        sessionStorage.removeItem('analysis_type');
+
+        setTimeout(() => window.location.href = '/analysis', 1200);
+      } else {
+        setError(`No response data found for course ${courseCode}.`);
+      }
+    } catch (err) {
+      setError(err.detail || err.error || `No responses found to analyze for course ${courseCode}.`);
+    }
+  };
+
   useEffect(() => {
     fetchSurveys();
   }, []);
@@ -36,14 +78,28 @@ export default function AdminResponses() {
       setTeachers(data);
 
       let totalInstructors = 0;
+      let totalInstructorDrafts = 0;
       let totalStudents = 0;
+      let totalStudentDrafts = 0;
+      
       data.forEach(t => {
-        totalInstructors += t.surveys.length;
         t.surveys.forEach(s => {
+          if (s.instructor_completed) {
+            totalInstructors += 1;
+          } else {
+            totalInstructorDrafts += 1;
+          }
           totalStudents += s.completed_student_count || 0;
+          totalStudentDrafts += s.saved_student_count || s.uncompleted_student_count || 0;
         });
       });
-      setStats({ instructors: totalInstructors, students: totalStudents });
+      
+      setStats({ 
+        instructors: totalInstructors, 
+        instructorDrafts: totalInstructorDrafts,
+        students: totalStudents,
+        studentDrafts: totalStudentDrafts
+      });
     } catch (err) {
       console.error(err);
       setError('Failed to fetch survey statistics.');
@@ -60,6 +116,31 @@ export default function AdminResponses() {
       setSuccess(`${type === 'instructor' ? 'Instructor' : 'Student'} Excel downloaded successfully!`);
     } catch (err) {
       setError(`Failed to download ${type} Excel file.`);
+    }
+  };
+
+  const handleDownloadCourseExcel = async (courseId, courseCode, type = 'student') => {
+    try {
+      setError('');
+      setSuccess('');
+      const token = localStorage.getItem('access');
+      const res = await fetch(`http://127.0.0.1:8080/api/admin/surveys/export/?course_id=${courseId}&type=${type}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const typeLabel = type === 'instructor' ? 'instructor' : type === 'student' ? 'students' : 'all';
+      a.download = `course_${courseCode}_${typeLabel}_responses.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setSuccess(`Excel file (${typeLabel}) for course ${courseCode} downloaded successfully!`);
+    } catch (err) {
+      setError(`Failed to download Excel file for course ${courseCode}.`);
     }
   };
 
@@ -144,14 +225,20 @@ export default function AdminResponses() {
       {/* Top dashboard summary metrics & quick actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card className="rounded-3xl border-slate-200 shadow-xl shadow-slate-200/50 p-6 flex flex-col justify-between">
-          <div className="flex justify-around items-center bg-slate-50 p-4 rounded-2xl h-full">
+          <div className="flex justify-around items-center bg-slate-50 p-4 rounded-2xl h-full gap-4">
             <div className="text-center flex-1">
-              <div className="text-4xl font-black text-slate-900">{stats.instructors}</div>
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Instructor<br />Responses</div>
+              <div className="text-3xl font-black text-slate-900">{stats.instructors}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Instructor Completed</div>
+              {stats.instructorDrafts > 0 && (
+                <div className="text-[10px] font-bold text-amber-600 mt-0.5">({stats.instructorDrafts} Drafts)</div>
+              )}
             </div>
-            <div className="text-center flex-1 border-l border-slate-200">
-              <div className="text-4xl font-black text-slate-900">{stats.students}</div>
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Student<br />Responses</div>
+            <div className="text-center flex-1 border-l border-slate-200 pl-4">
+              <div className="text-3xl font-black text-slate-900">{stats.students}</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Student Completed</div>
+              {stats.studentDrafts > 0 && (
+                <div className="text-[10px] font-bold text-amber-600 mt-0.5">({stats.studentDrafts} Drafts)</div>
+              )}
             </div>
           </div>
         </Card>
@@ -235,30 +322,74 @@ export default function AdminResponses() {
                           {survey.semester} {survey.year && `· ${survey.year}`}
                         </td>
                         <td className="p-4">
-                          <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full ${survey.instructor_completed
-                              ? 'bg-emerald-50 text-emerald-600'
-                              : 'bg-amber-50 text-amber-600'
-                            }`}>
-                            {survey.instructor_completed ? 'Published (Completed)' : 'Draft (Incomplete)'}
-                          </span>
+                          {survey.instructor_completed ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-black rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 uppercase tracking-wider">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                              Green - Instructor Completed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-black rounded-full bg-rose-50 text-rose-700 border border-rose-200 uppercase tracking-wider">
+                              <span className="w-2 h-2 rounded-full bg-rose-500" />
+                              Red - Instructor Incomplete
+                            </span>
+                          )}
                         </td>
                         <td className="p-4">
-                          <div className="flex gap-2">
-                            <span className="px-2.5 py-1 bg-emerald-50 text-emerald-600 text-xs font-bold rounded-lg border border-emerald-100">
-                              Completed: {survey.completed_student_count}
+                          <div className="flex gap-2 items-center">
+                            <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-black rounded-lg border border-emerald-200" title="Published student evaluations">
+                              Published: {survey.completed_student_count}
                             </span>
-                            <span className="px-2.5 py-1 bg-slate-50 text-slate-400 text-xs font-bold rounded-lg border border-slate-100">
+                            <span className="px-2.5 py-1 bg-amber-50 text-amber-700 text-xs font-black rounded-lg border border-amber-200" title="Student responses currently saved as draft">
                               Draft: {survey.uncompleted_student_count}
                             </span>
                           </div>
                         </td>
                         <td className="p-4 text-right pr-6">
-                          <Button
-                            onClick={() => handleOpenAudit(survey)}
-                            className="bg-[#1e3a8a] hover:bg-[#1a337a] text-white rounded-xl text-xs font-bold h-9 px-4 transition-all"
-                          >
-                            View Audit
-                          </Button>
+                          <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                            {/* 🟣 Analyse Instructor Survey */}
+                            <button
+                              onClick={() => handleAnalyzeIndividualCourse(survey.id, survey.course_code, 'instructor')}
+                              className="bg-purple-50 hover:bg-purple-600 text-purple-700 hover:text-white border border-purple-200 rounded-xl text-xs font-extrabold h-9 px-3 transition-all inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                              title="Analyze instructor self-evaluation survey for this specific course"
+                            >
+                              <BarChart3 className="w-3.5 h-3.5" /> Analyse Instructor
+                            </button>
+
+                            {/* 🔵 Analyse Course (Student Surveys) */}
+                            <button
+                              onClick={() => handleAnalyzeIndividualCourse(survey.id, survey.course_code, 'student')}
+                              className="bg-blue-50 hover:bg-[#1e3a8a] text-[#1e3a8a] hover:text-white border border-blue-200 rounded-xl text-xs font-extrabold h-9 px-3 transition-all inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                              title="Analyze student evaluation survey responses for this specific course"
+                            >
+                              <BarChart3 className="w-3.5 h-3.5" /> Analyse Course
+                            </button>
+
+                            {/* 🟣 Export Instructor Excel */}
+                            <button
+                              onClick={() => handleDownloadCourseExcel(survey.id, survey.course_code, 'instructor')}
+                              className="bg-purple-50/60 hover:bg-purple-700 text-purple-800 hover:text-white border border-purple-300 rounded-xl text-xs font-bold h-9 px-2.5 transition-all inline-flex items-center gap-1 shadow-sm cursor-pointer"
+                              title="Export instructor response Excel for this course"
+                            >
+                              <FileSpreadsheet className="w-3.5 h-3.5" /> Inst. Excel
+                            </button>
+
+                            {/* 🟢 Export Student Excel */}
+                            <button
+                              onClick={() => handleDownloadCourseExcel(survey.id, survey.course_code, 'student')}
+                              className="bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 rounded-xl text-xs font-bold h-9 px-2.5 transition-all inline-flex items-center gap-1 shadow-sm cursor-pointer"
+                              title="Export student responses Excel for this course"
+                            >
+                              <FileSpreadsheet className="w-3.5 h-3.5" /> Stud. Excel
+                            </button>
+
+                            {/* 🔍 View Audit Detail */}
+                            <button
+                              onClick={() => handleOpenAudit(survey)}
+                              className="bg-slate-100 hover:bg-slate-800 text-slate-700 hover:text-white border border-slate-200 rounded-xl text-xs font-bold h-9 px-3 transition-all cursor-pointer"
+                            >
+                              Audit
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -289,13 +420,42 @@ export default function AdminResponses() {
               </button>
 
               {/* Modal Title */}
-              <div className="flex items-center gap-3 mb-6 shrink-0">
-                <div className="w-12 h-12 rounded-2xl bg-blue-100 text-[#1e3a8a] flex items-center justify-center font-black">
-                  <ClipboardList className="w-6 h-6" />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 shrink-0 pr-12">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-100 text-[#1e3a8a] flex items-center justify-center font-black">
+                    <ClipboardList className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 tracking-tight">Survey Audit Details</h3>
+                    <p className="text-slate-500 text-sm font-bold">Course Code: {selectedSurvey.course_code} · {selectedSurvey.semester} {selectedSurvey.year}</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-2xl font-black text-slate-900 tracking-tight">Survey Audit Details</h3>
-                  <p className="text-slate-500 text-sm font-bold">Course Code: {selectedSurvey.course_code} · {selectedSurvey.semester} {selectedSurvey.year}</p>
+
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  <button
+                    onClick={() => handleAnalyzeIndividualCourse(selectedSurvey.id, selectedSurvey.course_code, 'instructor')}
+                    className="bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-black h-10 px-3.5 transition-all inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <BarChart3 className="w-4 h-4" /> Analyse Instructor
+                  </button>
+                  <button
+                    onClick={() => handleAnalyzeIndividualCourse(selectedSurvey.id, selectedSurvey.course_code, 'student')}
+                    className="bg-[#1e3a8a] hover:bg-blue-900 text-white rounded-xl text-xs font-black h-10 px-3.5 transition-all inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <BarChart3 className="w-4 h-4" /> Analyse Course
+                  </button>
+                  <button
+                    onClick={() => handleDownloadCourseExcel(selectedSurvey.id, selectedSurvey.course_code, 'instructor')}
+                    className="bg-purple-50 text-purple-700 hover:bg-purple-600 hover:text-white border border-purple-200 rounded-xl text-xs font-black h-10 px-3 transition-all inline-flex items-center gap-1 shadow-sm cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" /> Inst. Excel
+                  </button>
+                  <button
+                    onClick={() => handleDownloadCourseExcel(selectedSurvey.id, selectedSurvey.course_code, 'student')}
+                    className="bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white border border-emerald-200 rounded-xl text-xs font-black h-10 px-3 transition-all inline-flex items-center gap-1 shadow-sm cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" /> Stud. Excel
+                  </button>
                 </div>
               </div>
 

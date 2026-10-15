@@ -1,4 +1,3 @@
-
 import React, { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Database, Settings2, BarChart3, Zap, History } from "lucide-react";
@@ -53,6 +52,15 @@ const AnalysisPage = () => {
   const [numericColumns, setNumericColumns] = useState([]);
   const [variance, setVariance] = useState(95);
 
+  // Detect when we're in "course direct" mode (loaded from Analyse Course/Instructor button)
+  const [courseDirectData, setCourseDirectData] = useState(() => {
+    const raw = sessionStorage.getItem('course_direct_data');
+    if (raw) { try { return JSON.parse(raw); } catch { return null; } }
+    return null;
+  });
+  const [courseDirectName, setCourseDirectName] = useState(() => sessionStorage.getItem('course_direct_name') || '');
+  const isCourseMode = courseDirectData && courseDirectData.length > 0;
+
   const analysisTypeRaw = sessionStorage.getItem('analysis_type') || "";
   const [analysisType, setAnalysisType] = useState(analysisTypeRaw);
   const navigate = useNavigate();
@@ -71,11 +79,22 @@ const AnalysisPage = () => {
   }, [location.search]);
 
   // Compute table data and columns for dataset preview
+  // In course mode: always show the course-specific rows, not the full DB dataset
   const tableData = React.useMemo(() => {
+    if (isCourseMode) return courseDirectData || [];
     if (!selectedDataset || selectedDataset === "none") return [];
     const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-    return selected?.cleaned_data || [];
-  }, [selectedDataset, datasets]);
+    if (selected?.cleaned_data?.length > 0) return selected.cleaned_data;
+    // Fallback: sessionStorage uploaded table
+    try {
+      const stored = sessionStorage.getItem('uploaded_table_data');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch { /* ignore */ }
+    return [];
+  }, [selectedDataset, datasets, isCourseMode, courseDirectData]);
 
   const tableColumns = React.useMemo(() => {
     if (tableData.length === 0) return [];
@@ -87,6 +106,8 @@ const AnalysisPage = () => {
 
   // Compute the active dataset name dynamically
   const activeSessionName = React.useMemo(() => {
+    // Course direct mode: name comes from sessionStorage set by Responses tab
+    if (isCourseMode) return courseDirectName || 'Course Analysis';
     if (!selectedDataset || selectedDataset === "none") {
       return "No Active Dataset";
     }
@@ -105,7 +126,7 @@ const AnalysisPage = () => {
       return `Dataset #${selected.id}`;
     }
     return "No Active Dataset";
-  }, [selectedDataset, datasets]);
+  }, [selectedDataset, datasets, isCourseMode, courseDirectName]);
 
   // Sync states to sessionStorage on change
   React.useEffect(() => {
@@ -127,6 +148,13 @@ const AnalysisPage = () => {
   React.useEffect(() => {
     sessionStorage.setItem('analysis_yaxis', yAxis);
   }, [yAxis]);
+
+  // If a selected Y variable is checked in X (independent features), reset Y to enforce showing only remaining unselected features
+  React.useEffect(() => {
+    if (yAxis && xAxis.includes(yAxis)) {
+      setYAxis('');
+    }
+  }, [xAxis, yAxis]);
 
   React.useEffect(() => {
     const fetchDatasets = async () => {
@@ -153,11 +181,13 @@ const AnalysisPage = () => {
         setDatasets(sorted.slice(0, 5));
 
         // Auto-select latest dataset if none is selected
+        // ⛔ Skip auto-select if we're in course-direct mode (came from Analyse Course button)
         const params = new URLSearchParams(location.search);
         const qsDatasetId = params.get('datasetId');
+        const inCourseMode = !!sessionStorage.getItem('course_direct_data');
         if (qsDatasetId) {
           // Handled by the other useEffect
-        } else if (!sessionStorage.getItem('analysis_selected_dataset') && sorted.length > 0) {
+        } else if (!inCourseMode && !sessionStorage.getItem('analysis_selected_dataset') && sorted.length > 0) {
           setSelectedDataset(sorted[0].id.toString());
         }
       } catch (err) {
@@ -170,122 +200,216 @@ const AnalysisPage = () => {
     fetchDatasets();
   }, []);
 
+  // Helper: extract column names from raw data array
+  const extractColumnsFromData = React.useCallback((rawData) => {
+    let data = rawData;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch { return; }
+    }
+    if (!Array.isArray(data) || data.length === 0) return;
+    const firstRow = data[0] || {};
+    const EXCLUDED_COLUMNS = new Set([
+      'id', 'teacher_id', 'instructor_survey_id', 'is_published', 'edit_token',
+      'submitted_at', 'created_at', 'updated_at', 'status', 'course_code'
+    ]);
+    const cols = Object.keys(firstRow).filter(
+      col => !EXCLUDED_COLUMNS.has(col.toLowerCase().trim())
+    );
+    const numericCols = cols.filter((col) => {
+      const validValues = data.map((row) => row[col]).filter((val) => val !== null && val !== '' && val !== undefined);
+      if (validValues.length === 0) return false;
+      const numericCount = validValues.filter((val) => !isNaN(Number(val)) && val !== true && val !== false).length;
+      return (numericCount / validValues.length) >= 0.2;
+    });
+    setColumns(cols);
+    setNumericColumns(numericCols.length > 0 ? numericCols : cols);
+  }, []);
+
+  // Effect: populate columns — PRIORITY: course direct data > DB dataset > sessionStorage
   React.useEffect(() => {
     setXAxis([]);
-    setYAxis("");
+    setYAxis('');
     setColumns([]);
-  }, [selectedDataset]);
+    setNumericColumns([]);
 
-  React.useEffect(() => {
+    // ✅ PRIORITY 1: Course direct mode (came from Analyse Course/Instructor button)
+    if (isCourseMode) {
+      extractColumnsFromData(courseDirectData);
+      return;
+    }
+
     if (!selectedDataset) return;
 
-    const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-
-    if (selected && selected.cleaned_data && selected.cleaned_data.length > 0) {
-      const cols = Object.keys(selected.cleaned_data[0]);
-      setColumns(cols);
-    } else {
-      setColumns([]);
+    // ✅ PRIORITY 2: DB dataset already loaded in state
+    const selected = datasets.find((d) => d && d.id && d.id.toString() === selectedDataset);
+    if (selected) {
+      const rawData = (selected.cleaned_data && selected.cleaned_data.length > 0)
+        ? selected.cleaned_data
+        : selected.original_data;
+      if (rawData && Array.isArray(rawData) && rawData.length > 0) {
+        extractColumnsFromData(rawData);
+        return;
+      }
     }
-  }, [selectedDataset, datasets]);
 
-  React.useEffect(() => {
-    if (!selectedDataset) return;
-
-    const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-
-    if (selected && selected.cleaned_data?.length > 0) {
-      const data = selected.cleaned_data;
-
-      const cols = Object.keys(data[0]);
-
-      const numericCols = cols.filter((col) => {
-        const validValues = data
-          .map((row) => row[col])
-          .filter((val) => val !== null && val !== "");
-
-        const numericCount = validValues.filter(
-          (val) => !isNaN(Number(val)),
-        ).length;
-
-        return numericCount / validValues.length > 0.8; // 80% numeric
-      });
-
-      setColumns(cols);
-      setNumericColumns(numericCols);
+    // ✅ PRIORITY 3: sessionStorage uploaded_table_data fallback
+    const storedData = sessionStorage.getItem('uploaded_table_data');
+    if (storedData) {
+      try {
+        const parsed = JSON.parse(storedData);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          extractColumnsFromData(parsed);
+          return;
+        }
+      } catch { /* ignore */ }
     }
-  }, [selectedDataset, datasets]);
+
+    // ✅ PRIORITY 4: Fetch from API by dataset ID
+    const fetchDatasetById = async () => {
+      try {
+        const res = await fetch(`${apiUrl('/datasets/')}${selectedDataset}/`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('access')}`,
+          },
+        });
+        if (!res.ok) return;
+        const ds = await res.json();
+        const rawData = (ds.cleaned_data && Array.isArray(ds.cleaned_data) && ds.cleaned_data.length > 0)
+          ? ds.cleaned_data
+          : ds.original_data;
+        extractColumnsFromData(rawData);
+      } catch (err) {
+        console.error('Failed to fetch dataset detail:', err);
+      }
+    };
+    fetchDatasetById();
+  }, [selectedDataset, datasets, isCourseMode, courseDirectData, extractColumnsFromData]);
+
   // const handleRun = () => {
   //   if (step !== 2) return;
   //   logActivity('analysis', `Ran visualization on ${dataset}`);
   //   navigate('/results');
   // };
+  const filterSelectedData = (data, cols) => {
+    if (!Array.isArray(data) || !cols || cols.length === 0) return data;
+    const colSet = new Set(cols.map(c => c.toLowerCase().trim()));
+    return data.map(row => {
+      if (!row || typeof row !== 'object') return row;
+      const newRow = {};
+      Object.keys(row).forEach(k => {
+        if (colSet.has(k.toLowerCase().trim())) {
+          newRow[k] = row[k];
+        }
+      });
+      return newRow;
+    });
+  };
+
   const handleRun = async () => {
-    const selected = datasets.find((d) => d.id.toString() === selectedDataset);
+    // ── Resolve the data to analyse ──────────────────────────────────────
+    // In course-mode the data came from the Responses tab; otherwise use DB dataset.
+    let cleanedData = null;
+    let datasetId = null;
+    let datasetCreatedAt = null;
 
-    if (!selected) return;
+    if (isCourseMode) {
+      // Use the course-specific data stored in sessionStorage
+      cleanedData = courseDirectData;
+      datasetId = sessionStorage.getItem('course_direct_id') || null;
+    } else {
+      const selected = datasets.find((d) => d.id.toString() === selectedDataset);
+      if (!selected) {
+        alert('Please select a dataset first.');
+        return;
+      }
+      datasetId = selected.id;
+      datasetCreatedAt = selected.created_at;
+      cleanedData = (selected.cleaned_data && selected.cleaned_data.length > 0)
+        ? selected.cleaned_data
+        : (selected.original_data || []);
 
-    let url = "";
+      // Fallback: try sessionStorage
+      if (!cleanedData || !Array.isArray(cleanedData) || cleanedData.length === 0) {
+        try {
+          const stored = sessionStorage.getItem('uploaded_table_data');
+          if (stored) cleanedData = JSON.parse(stored);
+        } catch { /* ignore */ }
+      }
+    }
+
+    if (typeof cleanedData === 'string') {
+      try { cleanedData = JSON.parse(cleanedData); } catch { /* ignore */ }
+    }
+
+    if (!cleanedData || !Array.isArray(cleanedData) || cleanedData.length === 0) {
+      alert('The selected dataset is empty. Please re-upload or select a valid dataset.');
+      return;
+    }
+
+    // ── Build request payload by analysis type ───────────────────────────
+    let url = '';
     let payload = {};
 
-    if (analysisType === "regression") {
-      if (xAxis.length === 0 || !yAxis) {
-        alert("Select X and Y variables");
+    if (analysisType === 'regression') {
+      const independentVars = xAxis.filter((col) => col !== yAxis);
+      if (independentVars.length === 0 || !yAxis) {
+        alert('Please select at least one Independent Feature (X) and one Dependent Variable (Y).');
         return;
       }
-      url = apiUrl("/analysis/regression/");
-
-      payload = {
-        independent_vars: xAxis,
-        dependent_var: yAxis,
-        data: selected.cleaned_data,
-      };
-    }
-
-    if (analysisType === "pca") {
-      if (xAxis.length === 0) {
-        alert("Select features");
-        return;
-      }
-      url = apiUrl("/analysis/pca/");
-
-      payload = {
-        selected_columns: xAxis,
-        variance_threshold: variance,
-        data: selected.cleaned_data,
-      };
-    }
-
-    if (analysisType === "basic") {
-      url = apiUrl("/analysis/basic/");
-      payload = {
-        data: selected.cleaned_data,
-      };
+      url = apiUrl('/analysis/regression/');
+      const selectedCols = [...independentVars, yAxis];
+      const filteredData = filterSelectedData(cleanedData, selectedCols);
+      payload = { independent_vars: independentVars, dependent_var: yAxis, data: filteredData, dataset_id: datasetId, missing_values: 'mean' };
+    } else if (analysisType === 'pca') {
+      if (xAxis.length === 0) { alert('Select at least one feature'); return; }
+      url = apiUrl('/analysis/pca/');
+      const filteredData = filterSelectedData(cleanedData, xAxis);
+      payload = { selected_columns: xAxis, variance_threshold: variance, data: filteredData, dataset_id: datasetId, missing_values: 'mean' };
+    } else if (analysisType === 'basic' || analysisType === 'descriptive') {
+      url = apiUrl('/analysis/basic/');
+      const selectedCols = xAxis.length > 0 ? xAxis : columns;
+      const filteredData = filterSelectedData(cleanedData, selectedCols);
+      payload = { selected_columns: selectedCols, data: filteredData, dataset_id: datasetId };
+    } else if (analysisType === 'correlation') {
+      url = apiUrl('/analysis/correlation/');
+      const selectedCols = xAxis.length > 0 ? xAxis : columns;
+      const filteredData = filterSelectedData(cleanedData, selectedCols);
+      payload = { selected_columns: selectedCols, data: filteredData, dataset_id: datasetId };
+    } else if (analysisType === 'kmeans') {
+      url = apiUrl('/analysis/kmeans/');
+      const selectedCols = xAxis.length > 0 ? xAxis : columns;
+      const filteredData = filterSelectedData(cleanedData, selectedCols);
+      payload = { selected_columns: selectedCols, data: filteredData, dataset_id: datasetId };
     }
 
     if (!url) {
-      alert("Please select and configure your analysis type in the steps below before running the analysis.");
+      alert('Please select an analysis algorithm first.');
       return;
     }
 
     try {
       setLoading(true);
       const response = await fetch(url, {
-        method: "POST",
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("access")}`,
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('access')}`,
         },
         body: JSON.stringify(payload),
       });
-
       const data = await response.json();
-      navigate("/results", {
+      if (!response.ok) {
+        alert(data.error || "Analysis failed. Note: Statistical algorithms (PCA, Regression, Correlation) require at least 2 sample rows. For single-row Instructor surveys, please analyze Student responses or Descriptive statistics.");
+        return;
+      }
+      navigate('/results', {
         state: {
           analysisType,
           result: data,
-          datasetId: selected.id,
-          datasetCreatedAt: selected.created_at,
+          datasetId,
+          datasetCreatedAt,
+          courseName: isCourseMode ? courseDirectName : null,
         },
       });
     } catch (err) {
@@ -305,471 +429,464 @@ const AnalysisPage = () => {
   };
 
   const StatBox = ({ label, value }) => (
-  <div className="rounded-xl bg-white border border-slate-200 p-3">
-    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-      {label}
-    </p>
-    <p className="text-lg font-black text-slate-900 mt-1">
-      {typeof value === "number" ? value.toFixed(2) : value ?? "N/A"}
-    </p>
-  </div>
-);
+    <div className="rounded-xl bg-white border border-slate-200 p-3">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+        {label}
+      </p>
+      <p className="text-lg font-black text-slate-900 mt-1">
+        {typeof value === "number" ? value.toFixed(2) : value ?? "N/A"}
+      </p>
+    </div>
+  );
 
-  return (
-    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700 pb-20">
-      {/* Page Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
-            Analysis Configuration
-          </h1>
-          <p className="text-slate-500 mt-1.5 text-xs sm:text-sm font-medium inline-flex items-center flex-wrap gap-1">
-            Configure parameters for your dataset analysis. Active session:
-            <Select
-              value={selectedDataset}
-              onValueChange={setSelectedDataset}
-            >
-              <SelectTrigger className="border border-blue-200/80 bg-blue-50/60 hover:bg-blue-100/60 h-auto py-1 px-3 text-[#1e3a8a] font-black rounded-full cursor-pointer inline-flex items-center gap-1.5 focus:ring-0 focus-visible:ring-0 shadow-xs transition-all text-xs">
-                <SelectValue placeholder="Select dataset..." />
-              </SelectTrigger>
-              <SelectContent className="rounded-xl border-slate-100">
-                {datasets.length === 0 ? (
-                  <SelectItem value="none" className="rounded-lg font-bold text-xs">
-                    No datasets
-                  </SelectItem>
-                ) : (
-                  datasets.map((item, index) => {
-                    let name = `Dataset #${item.id}`;
-                    const isLatest = datasets[0] && datasets[0].id === item.id;
-                    if (isLatest) {
-                      const saved = sessionStorage.getItem('uploaded_file_info');
-                      if (saved) {
-                        try {
-                          const parsed = JSON.parse(saved);
-                          if (parsed.name) name = parsed.name;
-                        } catch {}
-                      }
-                    }
-                    return (
-                      <SelectItem
-                        key={item.id}
-                        value={item.id.toString()}
-                        className="rounded-lg font-bold text-xs"
-                      >
-                        {name}
-                      </SelectItem>
-                    );
-                  })
-                )}
-              </SelectContent>
-            </Select>
-          </p>
+  const SURVEY_SECTIONS = [
+    { id: "basic_info", name: "🏫 Section 1: Basic Information & Metadata", prefixes: ["q1_", "q2_", "q3_", "q4_", "q104_", "q105_", "q107_", "q108_", "q109_", "q111_", "year", "semester", "role", "degree", "location", "student_count", "course_code", "course_name", "teacher_name", "university", "department"] },
+    { id: "engagement", name: "⚡ Section 2: Overall Engagement", prefixes: ["total_engage", "engage_score", "engage"] },
+    { id: "content", name: "📚 Section 3: Content Usage", prefixes: ["content_"] },
+    { id: "relevance", name: "🎯 Section 4: Relevance", prefixes: ["relevance_"] },
+    { id: "discuss", name: "💬 Section 5: Discussion Methods", prefixes: ["discuss_"] },
+    { id: "act_part", name: "🚀 Section 6: Active Participation", prefixes: ["act_part_"] },
+    { id: "methods", name: "🎓 Section 7: Teaching Methods (% of time)", prefixes: ["methods_", "methods_p_", "methods_s_", "methods_p", "methods_s"] },
+    { id: "cls_org", name: "📋 Section 8: Class Organization", prefixes: ["cls_org_"] },
+    { id: "challenge", name: "🧠 Section 9: Challenge Level", prefixes: ["challenge_", "challenge"] },
+    { id: "cncts", name: "🤝 Section 10: Connection with Students/Professor", prefixes: ["cncts_"] },
+    { id: "prof_attr", name: "⭐ Section 11: Professor Attributes & Feedback", prefixes: ["prof_", "attr_", "q_prof_"] },
+  ];
+
+  const renderCategorizedFeatureSelector = (colsToRender) => {
+    const categorized = {};
+    const assigned = new Set();
+
+    SURVEY_SECTIONS.forEach((sec) => {
+      categorized[sec.id] = colsToRender.filter((c) =>
+        sec.prefixes.some((prefix) => c.toLowerCase().startsWith(prefix.toLowerCase()))
+      );
+      categorized[sec.id].forEach((c) => assigned.add(c));
+    });
+
+    const remaining = colsToRender.filter((c) => !assigned.has(c));
+    if (remaining.length > 0) {
+      categorized["general"] = remaining;
+    }
+
+    const allColsSelected = colsToRender.length > 0 && colsToRender.every((c) => xAxis.includes(c));
+
+    return (
+      <div className="space-y-3 mt-2">
+        {/* 🔥 Top Global Quick Selector (Select All Sections / Clear All) */}
+        <div className="flex items-center justify-between bg-slate-100 p-2.5 rounded-xl border border-slate-200">
+          <span className="text-xs font-black text-slate-800">
+            Feature Selection ({xAxis.length} of {colsToRender.length} selected)
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              if (allColsSelected) {
+                setXAxis((prev) => prev.filter((c) => !colsToRender.includes(c)));
+              } else {
+                setXAxis((prev) => Array.from(new Set([...prev, ...colsToRender])));
+              }
+            }}
+            className="text-xs font-black text-[#1e3a8a] bg-white px-3 py-1 rounded-lg border border-blue-200 hover:bg-blue-50 transition-all shadow-xs cursor-pointer"
+          >
+            {allColsSelected ? "Clear All Features" : "Select All (Sections 1–11)"}
+          </button>
         </div>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            className="h-11 px-6 rounded-xl font-bold border-slate-200 bg-white text-slate-600 shadow-sm flex items-center gap-2 text-xs"
-          >
-            <History className="w-4 h-4 text-slate-400" />
-            History
-          </Button>
-          <Button
-            onClick={handleRun}
-            disabled={loading}
-            className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2 disabled:opacity-50"
-          >
-            {loading ? (
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-0.5 h-4">
-                  {[0, 1, 2, 3, 4].map((i) => (
-                    <motion.div
-                      key={i}
-                      className="w-0.5 rounded-full bg-white"
-                      style={{ height: "4px" }}
-                      animate={{
-                        height: [4, 14, 4]
-                      }}
-                      transition={{
-                        duration: 0.8,
-                        repeat: Infinity,
-                        ease: "easeInOut",
-                        delay: i * 0.15
-                      }}
-                    />
+
+        <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+          {SURVEY_SECTIONS.map((sec) => {
+            const cols = categorized[sec.id] || [];
+            if (cols.length === 0) return null;
+            const selectedCount = cols.filter((c) => xAxis.includes(c)).length;
+            const allSelected = cols.every((c) => xAxis.includes(c));
+
+            return (
+              <div key={sec.id} className="border border-slate-200 rounded-xl p-3 bg-white shadow-xs">
+                <div className="flex justify-between items-center mb-2 pb-1 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-black text-slate-800">{sec.name}</span>
+                    <span className="text-[10px] font-extrabold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                      {selectedCount}/{cols.length}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (allSelected) {
+                        setXAxis((prev) => prev.filter((c) => !cols.includes(c)));
+                      } else {
+                        setXAxis((prev) => Array.from(new Set([...prev, ...cols])));
+                      }
+                    }}
+                    className="text-[10px] font-bold text-[#1e3a8a] hover:underline uppercase tracking-wider cursor-pointer"
+                  >
+                    {allSelected ? "Clear Section" : "Select Section"}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+                  {cols.map((col) => (
+                    <label key={col} className="flex items-center gap-2 text-xs font-bold text-slate-600 cursor-pointer hover:text-slate-900">
+                      <input
+                        type="checkbox"
+                        checked={xAxis.includes(col)}
+                        onChange={() => {
+                          setXAxis((prev) =>
+                            prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+                          );
+                        }}
+                        className="rounded border-slate-300 text-[#1e3a8a] focus:ring-[#1e3a8a]"
+                      />
+                      {col}
+                    </label>
                   ))}
                 </div>
-                Processing...
               </div>
+            );
+          })}
+
+          {categorized["general"] && categorized["general"].length > 0 && (
+            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50">
+              <div className="flex justify-between items-center mb-2 pb-1 border-b border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black text-slate-800">📊 General / Other Features</span>
+                  <span className="text-[10px] font-extrabold text-slate-500 bg-white px-2 py-0.5 rounded-full border border-slate-200">
+                    {categorized["general"].filter((c) => xAxis.includes(c)).length}/{categorized["general"].length}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cols = categorized["general"];
+                    const allSelected = cols.every((c) => xAxis.includes(c));
+                    if (allSelected) {
+                      setXAxis((prev) => prev.filter((c) => !cols.includes(c)));
+                    } else {
+                      setXAxis((prev) => Array.from(new Set([...prev, ...cols])));
+                    }
+                  }}
+                  className="text-[10px] font-bold text-[#1e3a8a] hover:underline uppercase tracking-wider cursor-pointer"
+                >
+                  Select / Clear
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+                {categorized["general"].map((col) => (
+                  <label key={col} className="flex items-center gap-2 text-xs font-bold text-slate-600 cursor-pointer hover:text-slate-900">
+                    <input
+                      type="checkbox"
+                      checked={xAxis.includes(col)}
+                      onChange={() => {
+                        setXAxis((prev) =>
+                          prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+                        );
+                      }}
+                      className="rounded border-slate-300 text-[#1e3a8a] focus:ring-[#1e3a8a]"
+                    />
+                    {col}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const currentDatasetObj = datasets.find((d) => d && d.id && d.id.toString() === selectedDataset);
+  let activeDatasetName = "Active Survey Dataset";
+
+  const savedFileInfo = sessionStorage.getItem('uploaded_file_info');
+  if (savedFileInfo) {
+    try {
+      const parsed = JSON.parse(savedFileInfo);
+      if (parsed.name && parsed.name !== 'Survey Data') {
+        activeDatasetName = parsed.name;
+      }
+    } catch (e) {}
+  } else if (currentDatasetObj) {
+    activeDatasetName = currentDatasetObj.name || currentDatasetObj.file_name || `Survey Dataset #${currentDatasetObj.id}`;
+  }
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 pb-20">
+      {/* 🚀 Modern Unique Header Banner */}
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-xl shadow-slate-200/40 flex flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-blue-50/50 rounded-full blur-3xl -z-0 pointer-events-none" />
+        <div className="relative z-10 space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {isCourseMode ? (
+              <span className="px-3 py-1 bg-purple-50 text-purple-700 text-[10px] font-black uppercase tracking-wider rounded-full border border-purple-200">
+                📌 Course Analysis Mode
+              </span>
             ) : (
-              <>
-                <Zap className="w-4 h-4 fill-white animate-pulse" />
-                Run Analysis
-              </>
+              <span className="px-3 py-1 bg-blue-50 text-[#1e3a8a] text-[10px] font-black uppercase tracking-wider rounded-full border border-blue-200">
+                Active Session
+              </span>
             )}
-          </Button>
+            <span className="text-xs font-black text-slate-800 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
+              {activeSessionName}
+            </span>
+            {columns.length > 0 && (
+              <span className="text-xs font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100">
+                {columns.length} variables available
+              </span>
+            )}
+            {isCourseMode && sessionStorage.getItem('course_direct_type') && (
+              <span className={`text-[10px] font-black px-2.5 py-1 rounded-full border ${
+                sessionStorage.getItem('course_direct_type') === 'instructor'
+                  ? 'bg-purple-50 text-purple-700 border-purple-200'
+                  : sessionStorage.getItem('course_direct_type') === 'student'
+                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              }`}>
+                {sessionStorage.getItem('course_direct_type') === 'instructor' ? '🧑‍🏫 Instructor' : sessionStorage.getItem('course_direct_type') === 'student' ? '👩‍🎓 Students' : '🔗 Combined'}
+              </span>
+            )}
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
+            Statistical &amp; Machine Learning Analysis
+          </h1>
+          <p className="text-slate-500 text-xs sm:text-sm font-medium">
+            Configure algorithm parameters, select features across Sections 1–11, and generate interactive analytics reports.
+          </p>
+        </div>
+
+        {/* Dataset Switcher — shows course exit button in course mode */}
+        <div className="relative z-10 shrink-0">
+          {isCourseMode ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Course Mode Active</span>
+              <button
+                type="button"
+                onClick={() => {
+                  // Exit course mode — clear ALL course and uploaded slot data
+                  sessionStorage.removeItem('course_direct_data');
+                  sessionStorage.removeItem('course_direct_name');
+                  sessionStorage.removeItem('course_direct_type');
+                  sessionStorage.removeItem('course_direct_id');
+                  sessionStorage.removeItem('course_direct_code');
+                  // Also clear uploaded slots so stale course data doesn't persist
+                  sessionStorage.removeItem('uploaded_table_data');
+                  sessionStorage.removeItem('uploaded_columns');
+                  sessionStorage.removeItem('uploaded_file_info');
+                  sessionStorage.removeItem('analysis_xaxis');
+                  sessionStorage.removeItem('analysis_yaxis');
+                  setCourseDirectData(null);
+                  setCourseDirectName('');
+                  setXAxis([]);
+                  setYAxis('');
+                  setColumns([]);
+                  setNumericColumns([]);
+                  // Auto-select first DB dataset if available
+                  if (datasets.length > 0) {
+                    setSelectedDataset(datasets[0].id.toString());
+                  }
+                }}
+                className="w-64 h-11 rounded-xl bg-slate-100 border border-slate-200 text-xs font-black text-slate-700 hover:bg-slate-200 transition-all flex items-center gap-2 px-4 cursor-pointer"
+              >
+                <Database className="w-4 h-4 text-slate-500" />
+                Switch to Saved Datasets
+              </button>
+            </div>
+          ) : (
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                Switch Dataset
+              </label>
+              <Select
+                value={selectedDataset}
+                onValueChange={setSelectedDataset}
+              >
+                <SelectTrigger className="w-64 bg-slate-50 border border-slate-200 rounded-xl h-11 font-extrabold text-slate-800 hover:bg-slate-100 transition-all text-xs cursor-pointer shadow-xs">
+                  <Database className="w-4 h-4 text-[#1e3a8a] shrink-0" />
+                  <SelectValue placeholder="Select active dataset..." />
+                </SelectTrigger>
+                <SelectContent className="rounded-2xl border-slate-200 shadow-2xl p-1">
+                  {datasets.length === 0 ? (
+                    <SelectItem value="none" className="rounded-xl font-bold text-xs">
+                      No saved datasets
+                    </SelectItem>
+                  ) : (
+                    datasets.map((item, index) => {
+                      let dName = item.name || item.file_name || `Survey Dataset #${item.id}`;
+                      if (index === 0 && savedFileInfo) {
+                        try {
+                          const p = JSON.parse(savedFileInfo);
+                          if (p.name) dName = p.name;
+                        } catch {}
+                      }
+                      return (
+                        <SelectItem
+                          key={item.id}
+                          value={item.id.toString()}
+                          className="rounded-xl font-bold text-xs py-2.5"
+                        >
+                          {dName}
+                        </SelectItem>
+                      );
+                    })
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="space-y-8">
         {/* Horizontal Configurations */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-          <Card className="rounded-[24px] border-slate-200 shadow-lg shadow-slate-200/20 bg-white overflow-hidden">
-            <CardHeader className="p-6 pb-4 border-b border-slate-50">
-              <CardTitle className="font-black text-slate-800 flex items-center gap-2.5 text-sm uppercase tracking-wider">
-                <Settings2 className="w-4.5 h-4.5 text-slate-400" />
-                Variables
+          <Card className="rounded-[28px] border-slate-200/80 shadow-xl shadow-slate-200/30 bg-white overflow-hidden">
+            <CardHeader className="p-6 pb-4 border-b border-slate-100 bg-slate-50/50">
+              <CardTitle className="font-black text-slate-900 flex items-center gap-2.5 text-sm uppercase tracking-wider">
+                <Settings2 className="w-4.5 h-4.5 text-[#1e3a8a]" />
+                Analysis Setup &amp; Variable Selection
               </CardTitle>
             </CardHeader>
             <CardContent className="p-6 sm:p-8 space-y-6">
               {step === 1 && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-700 ml-0.5">
-                    Datasets
-                  </label>
-                  <Select
-                    defaultValue="none"
-                    value={selectedDataset}
-                    onValueChange={setSelectedDataset}
-                  >
-                    <SelectTrigger className="w-full bg-slate-50/50 border-slate-200 rounded-xl h-11 font-bold text-slate-700 hover:bg-slate-50 transition-all text-xs">
-                      <SelectValue placeholder="None" />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-xl border-slate-100">
-                      {datasets.length === 0 ? (
-                        <SelectItem
-                          value="none"
-                          className="rounded-lg font-bold text-xs"
-                        >
-                          No datasets
-                        </SelectItem>
-                      ) : (
-                        datasets.map((item, index) => (
-                          <SelectItem
-                            key={item.id}
-                            value={item.id.toString()}
-                            className="rounded-lg font-bold text-xs"
-                          >
-                            Dataset {index + 1}
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-
-                  <button
-                    onClick={() => {
-                      if (!selectedDataset || selectedDataset === "none") {
-                        alert("Please select dataset");
-                        return;
-                      }
-                      setStep(2);
-                    }}
-                    className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
-              {step === 2 && (
                 <div className="space-y-4">
-                  <label className="text-xs font-bold text-slate-700 ml-0.5">
-                    Analysis Type
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                      Select Analysis Algorithm
+                    </label>
+                    <span className="text-[10px] font-extrabold text-blue-800 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
+                      Step 1 of 2
+                    </span>
+                  </div>
 
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {[
-                      { id: "basic", label: "Basic Analysis" },
-                      { id: "regression", label: "Regression" },
-                      { id: "pca", label: "PCA" },
-                    ].map((type) => (
+                      { id: "pca", title: "Principal Component Analysis (PCA)", desc: "Dimensionality reduction & feature variance structure." },
+                      { id: "regression", title: "Linear Regression", desc: "Model relationship between dependent (Y) & independent (X) features." },
+                      { id: "correlation", title: "Correlation Matrix", desc: "Analyze feature-to-feature correlation coefficients." },
+                      { id: "kmeans", title: "K-Means Clustering", desc: "Group responses into distinct behavioral clusters." },
+                      { id: "descriptive", title: "Descriptive Statistics", desc: "Mean, median, standard deviation, and distribution metrics." },
+                    ].map((item) => (
                       <button
-                        key={type.id}
-                        onClick={() => setAnalysisType(type.id)}
-                        className={cn(
-                          "h-12 rounded-xl border text-xs font-black uppercase tracking-wider transition-all",
-                          analysisType === type.id
-                            ? "bg-[#1e3a8a] text-white shadow-lg"
-                            : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100",
-                        )}
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setAnalysisType(item.id);
+                          setStep(2);
+                        }}
+                        className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                          analysisType === item.id
+                            ? "bg-blue-50/80 border-[#1e3a8a] ring-2 ring-blue-900/10"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                        }`}
                       >
-                        {type.label}
+                        <div className="font-extrabold text-xs text-slate-900">{item.title}</div>
+                        <div className="text-[11px] font-medium text-slate-500 mt-1 leading-snug">{item.desc}</div>
                       </button>
                     ))}
                   </div>
-
-                  <div className="flex justify-between gap-4">
-                    <button
-                      onClick={() => {
-                        setStep(1);
-
-                        setAnalysisType("");
-                      }}
-                      className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (!analysisType) {
-                          alert("Please select analysis type");
-                          return;
-                        }
-                        setStep(3);
-                      }}
-                      className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg hover:bg-[#1a337a]"
-                    >
-                      Next
-                    </button>
-                  </div>
                 </div>
               )}
-
-              {step === 3 && analysisType === "regression" && (
-                <div className="flex flex-col gap-5">
-                  {/* 🔥 X VARIABLES (MULTI SELECT) */}
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <label className="text-xs font-bold text-slate-700">
-                        Independent Variables (X)
-                      </label>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setXAxis(
-                            xAxis.length === columns.length ? [] : [...columns],
-                          )
-                        }
-                        className="text-xs font-bold text-[#1e3a8a] hover:underline"
-                      >
-                        {xAxis.length === columns.length
-                          ? "Clear All"
-                          : "Select All"}
-                      </button>
-                    </div>
-
-                    <div className="max-h-52 overflow-y-auto border rounded-xl p-3 bg-slate-50 mt-2">
-                      {columns.map((col) => (
-                        <label
-                          key={col}
-                          className="flex items-center gap-2 text-xs font-bold mb-2 cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={xAxis.includes(col)}
-                            onChange={() => {
-                              setXAxis((prev) =>
-                                prev.includes(col)
-                                  ? prev.filter((c) => c !== col)
-                                  : [...prev, col],
-                              );
-                            }}
-                          />
-                          {col}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 🔥 Y VARIABLE (SINGLE SELECT) */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700">
-                      Dependent Variable (Y)
-                    </label>
-
-                    <select
-                      value={yAxis}
-                      onChange={(e) => setYAxis(e.target.value)}
-                      className="w-full mt-2 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold bg-slate-50"
-                    >
-                      <option value="">Select Y</option>
-                      {columns
-                        .filter((col) => !xAxis.includes(col)) // avoid same variable
-                        .map((col) => (
-                          <option key={col} value={col}>
-                            {col}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  {/* 🔙 BACK & RUN */}
-                  <div className="flex gap-3 mt-4">
-                    <button
-                      onClick={() => {
-                        setStep(2);
-                        setXAxis([]);
-                        setYAxis("");
-                      }}
-                      className="h-11 px-6 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-bold hover:bg-slate-50 transition-all flex-1"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={handleRun}
-                      disabled={loading}
-                      className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white text-xs font-black uppercase tracking-wider shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      {loading ? (
-                        <>
-                          <div className="flex items-center gap-0.5 h-4">
-                            {[0, 1, 2, 3, 4].map((i) => (
-                              <motion.div
-                                key={i}
-                                className="w-0.5 rounded-full bg-white"
-                                style={{ height: "4px" }}
-                                animate={{
-                                  height: [4, 14, 4]
-                                }}
-                                transition={{
-                                  duration: 0.8,
-                                  repeat: Infinity,
-                                  ease: "easeInOut",
-                                  delay: i * 0.15
-                                }}
-                              />
-                            ))}
-                          </div>
-                          Processing...
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-4 h-4 fill-white animate-pulse" />
-                          Run Analysis
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-              {step === 3 && analysisType === "pca" && (
+              {step === 2 && (
                 <div className="space-y-5">
-                  {/* 🔥 FEATURE SELECTION */}
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <label className="text-xs font-bold text-slate-700">
-                        Select Features
+                  {/* Algorithm selection header info bar */}
+                  <div className="flex items-center justify-between bg-blue-50/60 p-3.5 rounded-2xl border border-blue-100 mb-2">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                        Selected Algorithm
+                      </span>
+                      <span className="text-xs font-black text-[#1e3a8a] capitalize">
+                        {analysisType === 'pca' ? 'Principal Component Analysis (PCA)' : analysisType === 'regression' ? 'Linear Regression' : analysisType === 'correlation' ? 'Correlation Matrix' : analysisType === 'kmeans' ? 'K-Means Clustering' : 'Descriptive Statistics'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="text-xs font-bold text-[#1e3a8a] hover:underline cursor-pointer"
+                    >
+                      Change Algorithm
+                    </button>
+                  </div>
+
+                  {/* Feature Selector for Analysis (Sections 1-11) */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                        Select Features (Sections 1–11)
                       </label>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setXAxis(
-                            xAxis.length === numericColumns.length
-                              ? []
-                              : [...numericColumns],
-                          )
-                        }
-                        className="text-xs font-bold text-[#1e3a8a] hover:underline"
-                      >
-                        {xAxis.length === numericColumns.length
-                          ? "Clear All"
-                          : "Select All"}
-                      </button>
-                    </div>
-
-                    <div className="max-h-52 overflow-y-auto border rounded-xl p-3 bg-slate-50 mt-2">
-                      {numericColumns.map((col) => (
-                        <label
-                          key={col}
-                          className="flex items-center gap-2 text-xs font-bold mb-2 cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={xAxis.includes(col)}
-                            onChange={() => {
-                              setXAxis((prev) =>
-                                prev.includes(col)
-                                  ? prev.filter((c) => c !== col)
-                                  : [...prev, col],
-                              );
-                            }}
-                          />
-                          {col}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 🔥 VARIANCE */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700">
-                      Variance Threshold (%)
-                    </label>
-
-                    <input
-                      type="number"
-                      value={variance}
-                      onChange={(e) => setVariance(Number(e.target.value))}
-                      className="w-full mt-2 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold"
-                    />
-                  </div>
-
-                  {/* 🔙 BACK & RUN */}
-                  <div className="flex gap-3 mt-4">
-                    <button
-                      onClick={() => {
-                        setStep(2);
-                        setXAxis([]);
-                      }}
-                      className="h-11 px-6 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-bold hover:bg-slate-50 transition-all flex-1"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={handleRun}
-                      disabled={loading}
-                      className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white text-xs font-black uppercase tracking-wider shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      {loading ? (
-                        <>
-                          <div className="flex items-center gap-0.5 h-4">
-                            {[0, 1, 2, 3, 4].map((i) => (
-                              <motion.div
-                                key={i}
-                                className="w-0.5 rounded-full bg-white"
-                                style={{ height: "4px" }}
-                                animate={{
-                                  height: [4, 14, 4]
-                                }}
-                                transition={{
-                                  duration: 0.8,
-                                  repeat: Infinity,
-                                  ease: "easeInOut",
-                                  delay: i * 0.15
-                                }}
-                              />
-                            ))}
-                          </div>
-                          Processing...
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-4 h-4 fill-white animate-pulse" />
-                          Run Analysis
-                        </>
+                      {columns.length > 0 && (
+                        <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-100">
+                          {columns.length} features available
+                        </span>
                       )}
-                    </button>
-                  </div>
-                </div>
-              )}
+                    </div>
 
-              {/* Basic Analysis block */}
-              {step === 3 && analysisType === "basic" && (
-                <div className="space-y-5">
-                  <p className="text-xs font-bold text-slate-500">
-                    Basic analysis will generate descriptive statistics (mean, median, unique values, missing values, etc.) for all columns in the dataset. No variable configuration is required.
-                  </p>
-                  
+                    {columns.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center gap-3 py-10 rounded-2xl border border-dashed border-slate-200 bg-slate-50/60">
+                        <div className="flex gap-1 items-end h-6">
+                          {[0,1,2,3,4].map((i) => (
+                            <motion.div
+                              key={i}
+                              className="w-1 rounded-full bg-blue-400"
+                              animate={{ height: [6, 18, 6] }}
+                              transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.12, ease: "easeInOut" }}
+                            />
+                          ))}
+                        </div>
+                        <p className="text-xs font-bold text-slate-400">Loading dataset columns…</p>
+                        <p className="text-[10px] text-slate-300 font-medium">Please select a dataset first or wait for data to load</p>
+                      </div>
+                    ) : (
+                      renderCategorizedFeatureSelector(columns)
+                    )}
+                  </div>
+
+
+                  {analysisType === 'regression' && (
+                    <div className="mt-3">
+                      <label className="text-xs font-bold text-slate-700">
+                        Dependent Variable (Y)
+                      </label>
+                      <select
+                        value={yAxis}
+                        onChange={(e) => setYAxis(e.target.value)}
+                        className="w-full mt-1.5 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold bg-slate-50 cursor-pointer"
+                      >
+                        {columns.filter((col) => !xAxis.includes(col)).length === 0 ? (
+                          <option value="">Nothing left to select</option>
+                        ) : (
+                          <>
+                            <option value="">Select Y Variable...</option>
+                            {columns
+                              .filter((col) => !xAxis.includes(col))
+                              .map((col) => (
+                                <option key={col} value={col}>
+                                  {col}
+                                </option>
+                              ))}
+                          </>
+                        )}
+                      </select>
+                    </div>
+                  )}
+
+                  {analysisType === 'pca' && (
+                    <div className="mt-3">
+                      <label className="text-xs font-bold text-slate-700">
+                        Variance Threshold (%)
+                      </label>
+                      <input
+                        type="number"
+                        value={variance}
+                        onChange={(e) => setVariance(Number(e.target.value))}
+                        className="w-full mt-1.5 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold"
+                      />
+                    </div>
+                  )}
+
                   {/* 🔙 BACK & RUN */}
-                  <div className="flex gap-3 mt-4">
+                  <div className="flex gap-3 mt-6 pt-4 border-t border-slate-100">
                     <button
-                      onClick={() => {
-                        setStep(2);
-                        setXAxis([]);
-                        setYAxis("");
-                      }}
-                      className="h-11 px-6 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-bold hover:bg-slate-50 transition-all flex-1"
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="h-11 px-6 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-bold hover:bg-slate-50 transition-all flex-1 cursor-pointer"
                     >
                       Back
                     </button>
@@ -934,946 +1051,3 @@ const AnalysisPage = () => {
 };
 
 export default AnalysisPage;
-
-// import React, { useState } from "react";
-// import { useNavigate } from "react-router-dom";
-// import { Database, Settings2, BarChart3, Zap, History } from "lucide-react";
-// import { cn } from "../lib/utils";
-// import { Switch } from "../components/ui/switch";
-// import { Button } from "../components/ui/button";
-// import {
-//   Card,
-//   CardContent,
-//   CardHeader,
-//   CardTitle,
-// } from "../components/ui/card";
-// import {
-//   Select,
-//   SelectContent,
-//   SelectItem,
-//   SelectTrigger,
-//   SelectValue,
-// } from "../components/ui/select";
-
-// const AnalysisPage = () => {
-//   const [dataset] = useState("Fall_2023_Survey_Results.xlsx");
-//   const [xAxis, setXAxis] = useState([]);
-//   const [yAxis, setYAxis] = useState("");
-//   const [chartType, setChartType] = useState("bar");
-//   const [loading, setLoading] = useState(true);
-//   const [datasets, setDatasets] = useState([]);
-
-//   const [basicAnalysis, setBasicAnalysis] = useState(null);
-//   const [basicLoading, setBasicLoading] = useState(false);
-
-//   const [step, setStep] = useState(1);
-//   const [selectedDataset, setSelectedDataset] = useState("");
-//   const [columns, setColumns] = useState([]);
-//   const [numericColumns, setNumericColumns] = useState([]);
-//   const [variance, setVariance] = useState(95);
-
-//   const [analysisType, setAnalysisType] = useState("");
-//   const navigate = useNavigate();
-
-//   // React.useEffect(() => {
-//   //   const timer = setTimeout(() => setLoading(false), 2000);
-//   //   return () => clearTimeout(timer);
-//   // }, []);
-//   const fetchBasicAnalysis = async (datasetId) => {
-//     const selected = datasets.find((d) => d.id.toString() === datasetId);
-
-//     if (!selected?.cleaned_data) return;
-
-//     try {
-//       setBasicLoading(true);
-
-//       const response = await fetch(
-//         "http://127.0.0.1:8080/api/analysis/basic/",
-//         {
-//           method: "POST",
-//           headers: {
-//             "Content-Type": "application/json",
-//             Authorization: `Bearer ${localStorage.getItem("access")}`,
-//           },
-//           body: JSON.stringify({
-//             data: selected.cleaned_data,
-//           }),
-//         }
-//       );
-
-//       const data = await response.json();
-
-//       console.log("Basic Analysis Response:", data);
-
-//       if (response.ok) {
-//         setBasicAnalysis(data);
-//       } else {
-//         console.error("Basic Analysis Error:", data);
-//       }
-//     } catch (error) {
-//       console.error("Basic Analysis Fetch Error:", error);
-//     } finally {
-//       setBasicLoading(false);
-//     }
-//   };
-
-//   React.useEffect(() => {
-//     if (selectedDataset) {
-//       fetchBasicAnalysis(selectedDataset);
-//     } else {
-//       setBasicAnalysis(null);
-//     }
-//   }, [selectedDataset]);
-
-//   React.useEffect(() => {
-//     const timer = setTimeout(() => setLoading(false), 2000);
-
-//     const fetchDatasets = async () => {
-//       try {
-//         const response = await fetch("http://127.0.0.1:8080/api/datasets/", {
-//           headers: {
-//             "Content-Type": "application/json",
-//             Authorization: `Bearer ${localStorage.getItem("access")}`,
-//           },
-//         });
-
-//         const data = await response.json();
-
-//         if (!response.ok) {
-//           console.error("Failed to fetch datasets", data);
-//           return;
-//         }
-
-//         const sorted = data.sort(
-//           (a, b) => new Date(b.created_at) - new Date(a.created_at),
-//         );
-
-//         // Store all datasets; the dropdown will handle scrolling
-//         setDatasets(sorted);
-//       } catch (err) {
-//         console.error("Error:", err);
-//       }
-//     };
-
-//     fetchDatasets();
-
-//     return () => clearTimeout(timer);
-//   }, []);
-
-//   React.useEffect(() => {
-//     setXAxis([]);
-//     setYAxis("");
-//     setColumns([]);
-//   }, [selectedDataset]);
-
-//   React.useEffect(() => {
-//     if (!selectedDataset) return;
-
-//     const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-
-//     if (selected && selected.cleaned_data && selected.cleaned_data.length > 0) {
-//       const cols = Object.keys(selected.cleaned_data[0]);
-//       setColumns(cols);
-//     } else {
-//       setColumns([]);
-//     }
-//   }, [selectedDataset, datasets]);
-
-//   React.useEffect(() => {
-//     if (!selectedDataset) return;
-
-//     const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-
-//     if (selected && selected.cleaned_data?.length > 0) {
-//       const data = selected.cleaned_data;
-
-//       const cols = Object.keys(data[0]);
-
-//       const numericCols = cols.filter((col) => {
-//         const validValues = data
-//           .map((row) => row[col])
-//           .filter((val) => val !== null && val !== "");
-
-//         const numericCount = validValues.filter(
-//           (val) => !isNaN(Number(val)),
-//         ).length;
-
-//         return numericCount / validValues.length > 0.8; // 80% numeric
-//       });
-
-//       setColumns(cols);
-//       setNumericColumns(numericCols);
-//     }
-//   }, [selectedDataset, datasets]);
-//   // const handleRun = () => {
-//   //   if (step !== 2) return;
-//   //   logActivity('analysis', `Ran visualization on ${dataset}`);
-//   //   navigate('/results');
-//   // };
-//   const handleRun = async () => {
-//     const selected = datasets.find((d) => d.id.toString() === selectedDataset);
-
-//     if (!selected) return;
-
-//     let url = "";
-//     let payload = {};
-
-//     if (analysisType === "regression") {
-//       if (xAxis.length === 0 || !yAxis) {
-//         alert("Select X and Y variables");
-//         return;
-//       }
-//       url = "http://127.0.0.1:8080/api/analysis/regression/";
-
-//       payload = {
-//         independent_vars: xAxis,
-//         dependent_var: yAxis,
-//         data: selected.cleaned_data,
-//       };
-//     }
-
-//     if (analysisType === "pca") {
-//       if (xAxis.length === 0) {
-//         alert("Select features");
-//         return;
-//       }
-//       url = "http://127.0.0.1:8080/api/analysis/pca/";
-
-//       payload = {
-//         selected_columns: xAxis,
-//         variance_threshold: variance,
-//         data: selected.cleaned_data,
-//       };
-//     }
-
-//     try {
-//       setLoading(true);
-//       const response = await fetch(url, {
-//         method: "POST",
-//         headers: {
-//           "Content-Type": "application/json",
-//           Authorization: `Bearer ${localStorage.getItem("access")}`,
-//         },
-//         body: JSON.stringify(payload),
-//       });
-
-//       const data = await response.json();
-//       navigate("/results", {
-//         state: {
-//           analysisType,
-//           result: data,
-//           datasetId: selected.id,
-//           datasetCreatedAt: selected.created_at,
-//         },
-//       });
-//     } catch (err) {
-//       console.error(err);
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-//   const handleSelectAll = (availableColumns) => {
-//     if (xAxis.length === availableColumns.length) {
-//       setXAxis([]); // Unselect all
-//     } else {
-//       setXAxis([...availableColumns]); // Select all
-//     }
-//   };
-
-//   const StatBox = ({ label, value }) => (
-//   <div className="rounded-xl bg-white border border-slate-200 p-3">
-//     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-//       {label}
-//     </p>
-//     <p className="text-lg font-black text-slate-900 mt-1">
-//       {typeof value === "number" ? value.toFixed(2) : value ?? "N/A"}
-//     </p>
-//   </div>
-// );
-
-//   return (
-//     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700 pb-20">
-//       {/* Page Header */}
-//       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-//         <div>
-//           <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
-//             Analysis Configuration
-//           </h1>
-//           <p className="text-slate-500 mt-1.5 text-xs sm:text-sm font-medium">
-//             Configure parameters for your dataset analysis. Active session:
-//             <span className="text-[#1e3a8a] font-bold underline cursor-pointer ml-1">
-//               {dataset}
-//             </span>
-//           </p>
-//         </div>
-//         <div className="flex items-center gap-3">
-//           <Button
-//             variant="outline"
-//             className="h-11 px-6 rounded-xl font-bold border-slate-200 bg-white text-slate-600 shadow-sm flex items-center gap-2 text-xs"
-//           >
-//             <History className="w-4 h-4 text-slate-400" />
-//             History
-//           </Button>
-//           <Button
-//             onClick={handleRun}
-//             className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-//           >
-//             <Zap className="w-4 h-4 fill-white" />
-//             Run Analysis
-//           </Button>
-//         </div>
-//       </div>
-
-//       <div className="grid lg:grid-cols-12 gap-6 lg:gap-8 items-start">
-//         {/* Left Side: Configuration */}
-//         <div className="lg:col-span-12 xl:col-span-5 space-y-6">
-//           <Card className="rounded-[24px] border-slate-200 shadow-lg shadow-slate-200/20 bg-white overflow-hidden">
-//             <CardHeader className="p-6 pb-4 border-b border-slate-50">
-//               <CardTitle className="font-black text-slate-800 flex items-center gap-2.5 text-sm uppercase tracking-wider">
-//                 <Settings2 className="w-4.5 h-4.5 text-slate-400" />
-//                 Variables
-//               </CardTitle>
-//             </CardHeader>
-//             <CardContent className="p-6 sm:p-8 space-y-6">
-//               {step === 1 && (
-//                 <div className="space-y-2">
-//                   <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                     Datasets
-//                   </label>
-//                   <Select
-//                     defaultValue="none"
-//                     value={selectedDataset}
-//                     onValueChange={setSelectedDataset}
-//                   >
-//                     <SelectTrigger className="w-full bg-slate-50/50 border-slate-200 rounded-xl h-11 font-bold text-slate-700 hover:bg-slate-50 transition-all text-xs">
-//                       <SelectValue placeholder="None" />
-//                     </SelectTrigger>
-//                     <SelectContent
-//                       position="popper"
-//                       className="rounded-xl border-slate-100 overflow-y-auto"
-//                       style={{ maxHeight: "13rem" }}
-//                     >
-//                       {datasets.length === 0 ? (
-//                         <SelectItem
-//                           value="none"
-//                           className="rounded-lg font-bold text-xs"
-//                         >
-//                           No datasets
-//                         </SelectItem>
-//                       ) : (
-//                         datasets.map((item, index) => (
-//                           <SelectItem
-//                             key={item.id}
-//                             value={item.id.toString()}
-//                             className="rounded-lg font-bold text-xs"
-//                           >
-//                             Dataset {index + 1}
-//                           </SelectItem>
-//                         ))
-//                       )}
-//                     </SelectContent>
-//                   </Select>
-
-//                   <button
-//                     onClick={() => {
-//                       if (!selectedDataset) {
-//                         alert("Please select dataset");
-//                         return;
-//                       }
-//                       setStep(2);
-//                     }}
-//                     className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-//                   >
-//                     Next
-//                   </button>
-//                 </div>
-//               )}
-//               {step === 2 && (
-//                 <div className="space-y-4">
-//                   <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                     Analysis Type
-//                   </label>
-
-//                   <div className="grid grid-cols-2 gap-3">
-//                     {[
-//                       { id: "regression", label: "Regression" },
-//                       { id: "pca", label: "PCA" },
-//                     ].map((type) => (
-//                       <button
-//                         key={type.id}
-//                         onClick={() => setAnalysisType(type.id)}
-//                         className={cn(
-//                           "h-12 rounded-xl border text-xs font-black uppercase tracking-wider transition-all",
-//                           analysisType === type.id
-//                             ? "bg-[#1e3a8a] text-white shadow-lg"
-//                             : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100",
-//                         )}
-//                       >
-//                         {type.label}
-//                       </button>
-//                     ))}
-//                   </div>
-
-//                   <div className="flex justify-between gap-4">
-//                     <button
-//                       onClick={() => {
-//                         setStep(1);
-
-//                         setAnalysisType("");
-//                       }}
-//                       className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-//                     >
-//                       Back
-//                     </button>
-//                     <button
-//                       onClick={() => {
-//                         if (!analysisType) {
-//                           alert("Please select analysis type");
-//                           return;
-//                         }
-//                         setStep(3);
-//                       }}
-//                       className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg hover:bg-[#1a337a]"
-//                     >
-//                       Next
-//                     </button>
-//                   </div>
-//                 </div>
-//               )}
-
-//               {/* {step === 3 && analysisType === "regression" && (
-//                 <div className="flex flex-col gap-4">
-//                   <div className="space-y-2">
-//                     <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                       Independent Variable (X-Axis)
-//                     </label>
-//                     <Select
-//                       onValueChange={(col) => {
-//                         setXAxis((prev) =>
-//                           prev.includes(col)
-//                             ? prev.filter((item) => item !== col)
-//                             : [...prev, col],
-//                         );
-//                       }}
-//                     >
-//                       <SelectTrigger className="w-full bg-slate-50/50 border-slate-200 rounded-xl h-11 font-bold text-slate-700 hover:bg-slate-50 transition-all text-xs">
-//                         <SelectValue
-//                           placeholder={
-//                             xAxis.length > 0
-//                               ? xAxis.join(", ")
-//                               : "Select variables..."
-//                           }
-//                         />
-//                       </SelectTrigger>
-
-//                       <SelectContent className="rounded-xl border-slate-100 max-h-52 overflow-y-auto">
-//                         {columns.map((col, index) => (
-//                           <SelectItem
-//                             key={index}
-//                             value={col}
-//                             className="rounded-lg font-bold text-xs flex justify-between"
-//                           >
-//                             {col} {xAxis.includes(col) && "✓"}
-//                           </SelectItem>
-//                         ))}
-//                       </SelectContent>
-//                     </Select>
-//                     <p className="text-[10px] text-slate-400 font-medium ml-0.5 uppercase tracking-wide">
-//                       Categorical or continuous variable.
-//                     </p>
-//                   </div>
-
-//                   <div className="space-y-2">
-//                     <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                       Dependent Variable (Y-Axis)
-//                     </label>
-//                     <Select
-//                       value={yAxis}
-//                       onValueChange={setYAxis}
-//                       disabled={xAxis.length === 0}
-//                     >
-//                       <SelectTrigger className="w-full bg-slate-50/50 border-slate-200 rounded-xl h-11 font-bold text-slate-700 hover:bg-slate-50 transition-all text-xs">
-//                         <SelectValue placeholder="Select outcome..." />
-//                       </SelectTrigger>
-
-//                       <SelectContent className="rounded-xl border-slate-100 max-h-52 overflow-y-auto">
-//                         {columns
-//                           .filter((col) => !xAxis.includes(col))
-//                           .map((col, index) => (
-//                             <SelectItem
-//                               key={index}
-//                               value={col}
-//                               className="rounded-lg font-bold text-xs"
-//                             >
-//                               {col}
-//                             </SelectItem>
-//                           ))}
-//                       </SelectContent>
-//                     </Select>
-//                   </div>
-
-//                   <button
-//                     onClick={() => {
-//                       setStep(2);
-
-//                       setXAxis("");
-//                       setYAxis("");
-//                     }}
-//                     className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-[#1a337a] transition-all flex items-center gap-2"
-//                   >
-//                     Back
-//                   </button>
-//                 </div>
-//               )} */}
-//               {step === 3 && analysisType === "regression" && (
-//                 <div className="flex flex-col gap-5">
-//                   {/* 🔥 X VARIABLES (MULTI SELECT) */}
-//                   <div>
-//                     {/* <label className="text-xs font-bold text-slate-700">
-//                       Independent Variables (X)
-//                     </label> */}
-//                     <div className="flex items-center justify-between mb-3">
-//                       <label className="text-xs font-bold text-slate-700">
-//                         Independent Variables (X)
-//                       </label>
-
-//                       <button
-//                         type="button"
-//                         onClick={() =>
-//                           setXAxis(
-//                             xAxis.length === columns.length ? [] : [...columns],
-//                           )
-//                         }
-//                         className="text-xs font-bold text-[#1e3a8a] hover:underline"
-//                       >
-//                         {xAxis.length === columns.length
-//                           ? "Clear All"
-//                           : "Select All"}
-//                       </button>
-//                     </div>
-
-//                     <div className="max-h-52 overflow-y-auto border rounded-xl p-3 bg-slate-50 mt-2">
-//                       {columns.map((col) => (
-//                         <label
-//                           key={col}
-//                           className="flex items-center gap-2 text-xs font-bold mb-2 cursor-pointer"
-//                         >
-//                           <input
-//                             type="checkbox"
-//                             checked={xAxis.includes(col)}
-//                             onChange={() => {
-//                               setXAxis((prev) =>
-//                                 prev.includes(col)
-//                                   ? prev.filter((c) => c !== col)
-//                                   : [...prev, col],
-//                               );
-//                             }}
-//                           />
-//                           {col}
-//                         </label>
-//                       ))}
-//                     </div>
-//                   </div>
-
-//                   {/* 🔥 Y VARIABLE (SINGLE SELECT) */}
-//                   <div>
-//                     <label className="text-xs font-bold text-slate-700">
-//                       Dependent Variable (Y)
-//                     </label>
-
-//                     <select
-//                       value={yAxis}
-//                       onChange={(e) => setYAxis(e.target.value)}
-//                       className="w-full mt-2 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold bg-slate-50"
-//                     >
-//                       <option value="">Select Y</option>
-//                       {columns
-//                         .filter((col) => !xAxis.includes(col)) // avoid same variable
-//                         .map((col) => (
-//                           <option key={col} value={col}>
-//                             {col}
-//                           </option>
-//                         ))}
-//                     </select>
-//                   </div>
-
-//                   {/* 🔙 BACK */}
-//                   <button
-//                     onClick={() => {
-//                       setStep(2);
-//                       setXAxis([]);
-//                       setYAxis("");
-//                     }}
-//                     className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white text-xs font-bold"
-//                   >
-//                     Back
-//                   </button>
-//                 </div>
-//               )}
-//               {/* {step === 3 && analysisType === "pca" && (
-//                 <div className="space-y-6">
-               
-//                   <div className="space-y-2">
-//                     <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                       Select Columns (Features)
-//                     </label>
-
-//                     <Select
-//                       onValueChange={(col) => {
-//                         setXAxis((prev) =>
-//                           prev.includes(col)
-//                             ? prev.filter((c) => c !== col)
-//                             : [...prev, col],
-//                         );
-//                       }}
-//                     >
-//                       <SelectTrigger className="w-full bg-slate-50 border-slate-200 rounded-xl h-11 text-xs font-bold">
-//                         <SelectValue
-//                           placeholder={
-//                             xAxis.length > 0
-//                               ? xAxis.join(", ")
-//                               : "Select features..."
-//                           }
-//                         />
-//                       </SelectTrigger>
-
-//                       <SelectContent className="rounded-xl border-slate-100 max-h-52 overflow-y-auto">
-//                         {numericColumns.map((col) => (
-//                           <SelectItem
-//                             key={col}
-//                             value={col}
-//                             className="text-xs font-bold"
-//                           >
-//                             {col} {xAxis.includes(col) && "✓"}
-//                           </SelectItem>
-//                         ))}
-//                       </SelectContent>
-//                     </Select>
-                      
-//                     <p className="text-[10px] text-slate-400 font-medium uppercase">
-//                       Select numeric columns only
-//                     </p>
-//                   </div>
-
-//                   <div className="space-y-2">
-//                     <label className="text-xs font-bold text-slate-700 ml-0.5">
-//                       Variance Threshold (%)
-//                     </label>
-
-//                     <input
-//                       type="number"
-//                       value={variance}
-//                       onChange={(e) => {
-//                         const val = Number(e.target.value);
-
-//                         if (val >= 0 && val <= 100) {
-//                           setVariance(val);
-//                         }
-//                       }}
-//                       className="w-full h-11 px-4 rounded-xl border border-slate-200 text-xs font-bold"
-//                     />
-
-//                     <p className="text-[10px] text-slate-400 font-medium uppercase">
-//                       Determines number of components retained
-//                     </p>
-//                   </div>
-
-//                   <button
-//                     onClick={() => {
-//                       setStep(2);
-//                       setXAxis([]);
-//                     }}
-//                     className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white font-black text-[12px] uppercase tracking-widest shadow-lg hover:bg-[#1a337a]"
-//                   >
-//                     Back
-//                   </button>
-//                 </div>
-//               )} */}
-//               {step === 3 && analysisType === "pca" && (
-//                 <div className="space-y-5">
-//                   {/* 🔥 FEATURE SELECTION */}
-//                   <div>
-//                     {/* <label className="text-xs font-bold text-slate-700">
-//                       Select Features
-//                     </label> */}
-//                     <div className="flex items-center justify-between mb-3">
-//                       <label className="text-xs font-bold text-slate-700">
-//                         Select Features
-//                       </label>
-
-//                       <button
-//                         type="button"
-//                         onClick={() =>
-//                           setXAxis(
-//                             xAxis.length === numericColumns.length
-//                               ? []
-//                               : [...numericColumns],
-//                           )
-//                         }
-//                         className="text-xs font-bold text-[#1e3a8a] hover:underline"
-//                       >
-//                         {xAxis.length === numericColumns.length
-//                           ? "Clear All"
-//                           : "Select All"}
-//                       </button>
-//                     </div>
-
-//                     <div className="max-h-52 overflow-y-auto border rounded-xl p-3 bg-slate-50 mt-2">
-//                       {numericColumns.map((col) => (
-//                         <label
-//                           key={col}
-//                           className="flex items-center gap-2 text-xs font-bold mb-2 cursor-pointer"
-//                         >
-//                           <input
-//                             type="checkbox"
-//                             checked={xAxis.includes(col)}
-//                             onChange={() => {
-//                               setXAxis((prev) =>
-//                                 prev.includes(col)
-//                                   ? prev.filter((c) => c !== col)
-//                                   : [...prev, col],
-//                               );
-//                             }}
-//                           />
-//                           {col}
-//                         </label>
-//                       ))}
-//                     </div>
-//                   </div>
-
-//                   {/* 🔥 VARIANCE */}
-//                   <div>
-//                     <label className="text-xs font-bold text-slate-700">
-//                       Variance Threshold (%)
-//                     </label>
-
-//                     <input
-//                       type="number"
-//                       value={variance}
-//                       onChange={(e) => setVariance(Number(e.target.value))}
-//                       className="w-full mt-2 h-11 px-3 rounded-xl border border-slate-200 text-xs font-bold"
-//                     />
-//                   </div>
-
-//                   {/* 🔙 BACK */}
-//                   <button
-//                     onClick={() => {
-//                       setStep(2);
-//                       setXAxis([]);
-//                     }}
-//                     className="h-11 px-6 rounded-xl bg-[#1e3a8a] text-white text-xs font-bold"
-//                   >
-//                     Back
-//                   </button>
-//                 </div>
-//               )}
-//             </CardContent>
-//           </Card>
-
-//           <Card className="rounded-[24px] border-slate-200 shadow-lg shadow-slate-200/20 bg-white overflow-hidden">
-//             <CardHeader className="p-6 pb-4 border-b border-slate-50">
-//               <CardTitle className="font-black text-slate-800 flex items-center gap-2.5 text-sm uppercase tracking-wider">
-//                 <BarChart3 className="w-4.5 h-4.5 text-slate-400" />
-//                 Chart Settings
-//               </CardTitle>
-//             </CardHeader>
-//             <CardContent className="p-6 sm:p-8 space-y-8">
-//               <div className="grid grid-cols-3 gap-2 p-1 bg-slate-100/50 rounded-2xl">
-//                 {[
-//                   { id: "bar", label: "Bar", icon: BarChart3 },
-//                   { id: "line", label: "Line", icon: Settings2 },
-//                   { id: "scatter", label: "Scatter", icon: Database },
-//                 ].map((type) => (
-//                   <button
-//                     key={type.id}
-//                     onClick={() => setChartType(type.id)}
-//                     className={cn(
-//                       "flex flex-col items-center gap-1.5 py-3 px-1 rounded-xl transition-all",
-//                       chartType === type.id
-//                         ? "bg-white text-[#1e3a8a] shadow-sm font-black ring-1 ring-slate-200"
-//                         : "text-slate-400 hover:text-slate-600 font-bold",
-//                     )}
-//                   >
-//                     <type.icon className="w-4.5 h-4.5" />
-//                     <span className="text-[10px] uppercase tracking-widest">
-//                       {type.label}
-//                     </span>
-//                   </button>
-//                 ))}
-//               </div>
-
-//               <div className="space-y-6">
-//                 <div className="flex items-center justify-between">
-//                   <div className="space-y-0.5">
-//                     <p className="text-slate-900 text-[13px] font-black">
-//                       Exclude Outliers
-//                     </p>
-//                     <p className="text-slate-400 text-[11px] font-bold">
-//                       Remove values {">"} 3 SD
-//                     </p>
-//                   </div>
-//                   <Switch
-//                     defaultChecked
-//                     className="data-[state=checked]:bg-[#1e3a8a] scale-90"
-//                   />
-//                 </div>
-
-//                 <div className="flex items-center justify-between">
-//                   <div className="space-y-0.5">
-//                     <p className="text-slate-900 text-[13px] font-black">
-//                       Show Confidence Int.
-//                     </p>
-//                     <p className="text-slate-400 text-[11px] font-bold">
-//                       95% CI shading
-//                     </p>
-//                   </div>
-//                   <Switch className="data-[state=checked]:bg-[#1e3a8a] scale-90" />
-//                 </div>
-//               </div>
-//             </CardContent>
-//           </Card>
-//         </div>
-
-//         {/* Right Side: Preview Area */}
-//         <div className="lg:col-span-12 xl:col-span-7 h-full">
-//           <Card className="rounded-[32px] border-slate-200 shadow-xl shadow-slate-200/30 w-full min-h-[400px] lg:min-h-[500px] xl:min-h-[600px] flex items-center justify-center relative overflow-hidden bg-white/60 backdrop-blur-sm">
-//             {/* Visualizer Background Placeholder */}
-//             <div className="absolute inset-10 sm:inset-20 opacity-10 pointer-events-none grayscale flex items-end gap-6 sm:gap-10">
-//               {[4, 5, 8, 4, 10, 6].map((h, i) => (
-//                 <div
-//                   key={i}
-//                   className="flex-1 rounded-t-xl sm:rounded-t-2xl bg-slate-300"
-//                   style={{ height: `${h * 10}%` }}
-//                 ></div>
-//               ))}
-//             </div>
-
-//             {loading && (
-//               <div className="relative z-10 flex flex-col items-center gap-4 sm:gap-6 p-8 sm:p-12 bg-white rounded-[32px] shadow-2xl border border-slate-100 text-center animate-in zoom-in-95 duration-500 mx-4">
-//                 <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full border-4 border-slate-100 border-t-[#1e3a8a] animate-spin"></div>
-//                 <div>
-//                   <p className="text-xl sm:text-2xl font-black text-slate-900">
-//                     Generating Preview
-//                   </p>
-//                   <p className="text-[12px] font-bold text-slate-400 mt-1 sm:mt-2">
-//                     Processing 1,240 rows...
-//                   </p>
-//                 </div>
-//               </div>
-//             )}
-
-//             {!loading && (
-//               <Card className="rounded-[24px] border-slate-200 shadow-lg shadow-slate-200/20 bg-white">
-//                 <CardHeader>
-//                   <CardTitle className="text-xl font-black text-slate-900">
-//                     Analysis Preview
-//                   </CardTitle>
-//                 </CardHeader>
-
-//                 <CardContent>
-//                   {basicLoading ? (
-//                     <div className="text-center py-12">
-//                       <p className="text-slate-500 font-medium">
-//                         Loading basic analysis...
-//                       </p>
-//                     </div>
-//                   ) : basicAnalysis ? (
-//                     <div className="space-y-6">
-//                       {/* Overview */}
-//                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-//                         <div className="rounded-2xl bg-blue-50 p-5 border border-blue-100">
-//                           <p className="text-sm text-slate-500">Rows</p>
-//                           <p className="text-3xl font-black text-blue-700">
-//                             {basicAnalysis.total_rows}
-//                           </p>
-//                         </div>
-
-//                         <div className="rounded-2xl bg-emerald-50 p-5 border border-emerald-100">
-//                           <p className="text-sm text-slate-500">Columns</p>
-//                           <p className="text-3xl font-black text-emerald-700">
-//                             {basicAnalysis.total_columns}
-//                           </p>
-//                         </div>
-
-//                         <div className="rounded-2xl bg-violet-50 p-5 border border-violet-100">
-//                           <p className="text-sm text-slate-500">Features Analyzed</p>
-//                           <p className="text-3xl font-black text-violet-700">
-//                             {Object.keys(basicAnalysis.columns || {}).length}
-//                           </p>
-//                         </div>
-//                       </div>
-
-//                       {/* Column Summary */}
-//                       <div className="space-y-3">
-//                         {Object.entries(basicAnalysis.columns || {}).map(
-//                           ([column, stats]) => (
-//                             <div
-//                               key={column}
-//                               className="rounded-2xl border border-slate-200 p-4 bg-slate-50"
-//                             >
-//                               <div className="flex justify-between items-center">
-//                                 <h4 className="font-bold text-slate-900">{column}</h4>
-//                                 <span className="text-sm px-3 py-1 rounded-full bg-white border text-slate-600 capitalize">
-//                                   {stats.type}
-//                                 </span>
-//                               </div>
-
-//                               {stats.type === "numeric" ? (
-//                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-//                                   <StatBox label="Mean" value={stats.mean} />
-//                                   <StatBox label="Median" value={stats.median} />
-//                                   <StatBox label="Min" value={stats.min} />
-//                                   <StatBox label="Max" value={stats.max} />
-//                                 </div>
-//                               ) : (
-//                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-//                                   <StatBox label="Unique" value={stats.unique_count} />
-//                                   <StatBox label="Mode" value={stats.mode} />
-//                                   <StatBox label="Missing" value={stats.missing} />
-//                                   <StatBox
-//                                     label="Missing %"
-//                                     value={`${stats.missing_percent}%`}
-//                                   />
-//                                 </div>
-//                               )}
-//                             </div>
-//                           )
-//                         )}
-//                       </div>
-//                     </div>
-//                   ) : (
-//                     <div className="text-center py-12">
-//                       <BarChart3 className="w-16 h-16 mx-auto mb-4 text-slate-300" />
-//                       <h3 className="text-xl font-bold text-slate-700 mb-2">
-//                         Ready To Run Analysis
-//                       </h3>
-//                       <p className="text-slate-500 max-w-md mx-auto">
-//                         Configure variables and click Run Analysis. Results will appear here
-//                         as an interactive preview before opening in the Results page.
-//                       </p>
-//                     </div>
-//                   )}
-//                 </CardContent>
-//               </Card>
-//             )}
-
-//             {/* Bottom Controls as seen in image */}
-//             <div className="absolute bottom-10 flex gap-6 sm:gap-12 opacity-30 grayscale scale-75 sm:scale-90 pointer-events-none">
-//               <div className="w-20 sm:w-32 h-4 sm:h-6 bg-slate-200 rounded-full"></div>
-//               <div className="w-20 sm:w-32 h-4 sm:h-6 bg-slate-200 rounded-full"></div>
-//               <div className="w-20 sm:w-32 h-4 sm:h-6 bg-slate-200 rounded-full"></div>
-//             </div>
-
-//             <div className="absolute top-10 right-10 flex gap-3 sm:gap-4 opacity-30 grayscale scale-75 sm:scale-90 pointer-events-none">
-//               <div className="w-8 h-8 sm:w-10 sm:h-10 bg-slate-200 rounded-xl"></div>
-//               <div className="w-8 h-8 sm:w-10 sm:h-10 bg-slate-200 rounded-xl"></div>
-//             </div>
-//           </Card>
-//         </div>
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default AnalysisPage;

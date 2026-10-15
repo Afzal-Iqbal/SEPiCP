@@ -19,3 +19,11 @@ seaborn>=0.13.0
 waitress>=3.0
 whitenoise>=6.6
 openpyxl>=3.1.0
+
+# RAG & LangGraph dependencies
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-google-genai>=2.0.0
+langchain-chroma>=0.1.0
+chromadb>=0.5.0
+pymupdf>=1.23.0

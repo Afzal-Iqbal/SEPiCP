@@ -68,75 +68,119 @@ const UploadPage = () => {
     multiple: false
   });
 
- const handleProcess = async () => {
-  if (!file) return;
+const [selectedSheet, setSelectedSheet] = useState("sheet1");
+const [errorMessage, setErrorMessage] = useState("");
 
-  try {
-    setLoading(true);
-    let response;
-
-    if (file && file.size === 'DB') {
-      // Data was loaded from DB (Responses tab), send as JSON
-      
-      // GUARANTEE WE SEND THE DATA BY READING DIRECTLY FROM SESSIONSTORAGE!
-      const currentTableData = JSON.parse(sessionStorage.getItem('uploaded_table_data') || '[]');
-      console.log("Sending JSON data length:", currentTableData.length);
-      
-      response = await fetch(apiUrl("/datasets/upload/"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("access")}`,
-        },
-        body: JSON.stringify({ data: currentTableData }),
-      });
-    } else {
-      // Normal file upload
-      const formData = new FormData();
-      formData.append("file", file);
-      console.log("Uploading file:", file.name, "Size:", file.size);
-      
-      response = await fetch(apiUrl("/datasets/upload/"), {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("access")}`,
-        },
-        body: formData,
-      });
-    }
-
-    const result = await response.json();
-    console.log("Backend response:", result);
-
-    if (!response.ok) {
-      throw new Error(result.error || "Upload failed");
-    }
-
-    const cleaned = result.cleaned_data || [];
-    setTableData(cleaned);
-
-    const cols = Object.keys(cleaned[0] || {}).map((key) => ({
-      header: key.toUpperCase(),
-      accessorKey: key
-    }));
-    setColumns(cols);
-
-    // Save to sessionStorage
-    sessionStorage.setItem('uploaded_table_data', JSON.stringify(cleaned));
-    sessionStorage.setItem('uploaded_columns', JSON.stringify(cols));
-    if (file) {
-      sessionStorage.setItem('uploaded_file_info', JSON.stringify({ name: file.name, size: file.size }));
-    }
-
-    logActivity("upload", `Uploaded dataset: ${file.name}`);
-
-
-  } catch (error) {
-    console.error(error);
-  } finally {
-    setLoading(false);
+const executeUpload = async (token) => {
+  if (file && file.size === 'DB') {
+    const currentTableData = JSON.parse(sessionStorage.getItem('uploaded_table_data') || '[]');
+    return await fetch(apiUrl("/datasets/upload/"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ data: currentTableData }),
+    });
+  } else {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("sheet_name", selectedSheet);
+    return await fetch(apiUrl("/datasets/upload/"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
   }
 };
+
+  const [processedDatasetId, setProcessedDatasetId] = useState(null);
+
+  const handleProcess = async () => {
+    if (!file) return;
+    setErrorMessage("");
+
+    try {
+      setLoading(true);
+      let token = localStorage.getItem("access");
+
+      if (!token) {
+        alert("Authentication required. Please log in first.");
+        window.location.href = "/auth";
+        return;
+      }
+
+      let response = await executeUpload(token);
+
+      // If 401 Unauthorized, attempt token refresh automatically
+      if (response.status === 401) {
+        const refreshToken = localStorage.getItem("refresh");
+        if (refreshToken) {
+          const refreshRes = await fetch(apiUrl("/refresh/"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh: refreshToken }),
+          });
+
+          if (refreshRes.ok) {
+            const refreshData = await refreshRes.json();
+            localStorage.setItem("access", refreshData.access);
+            token = refreshData.access;
+            response = await executeUpload(token);
+          }
+        }
+      }
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          alert("Session expired. Please log out and log in again.");
+          window.location.href = "/auth";
+          return;
+        }
+        throw new Error(result.error || result.detail || "Upload failed");
+      }
+
+      const cleaned = result.cleaned_data || [];
+      setTableData(cleaned);
+
+      const cols = Object.keys(cleaned[0] || {}).map((key) => ({
+        header: key.toUpperCase().replace(/_/g, " "),
+        accessorKey: key
+      }));
+      setColumns(cols);
+
+      if (result.id) {
+        setProcessedDatasetId(result.id);
+        sessionStorage.setItem('analysis_selected_dataset', result.id.toString());
+        sessionStorage.setItem('analysis_step', '2');
+        sessionStorage.removeItem('course_direct_data');
+        sessionStorage.removeItem('course_direct_name');
+      }
+
+      // Safe sessionStorage write
+      try {
+        sessionStorage.setItem('uploaded_table_data', JSON.stringify(cleaned));
+        sessionStorage.setItem('uploaded_columns', JSON.stringify(cols));
+        if (file) {
+          sessionStorage.setItem('uploaded_file_info', JSON.stringify({ name: file.name, size: file.size }));
+        }
+      } catch (storageErr) {
+        console.warn("sessionStorage quota reached; relying on memory state.", storageErr);
+      }
+
+      logActivity("upload", `Uploaded dataset: ${file.name}`);
+
+    } catch (error) {
+      console.error("Upload error:", error);
+      setErrorMessage(error.message || "Upload failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700 pb-20">
@@ -235,9 +279,9 @@ const UploadPage = () => {
             <div className="space-y-4">
               {[
                 { label: 'File Name', value: file?.name || 'research_data_v2.xlsx' },
-                { label: 'Size', value: file ? (file.size / (1024 * 1024)).toFixed(1) + ' MB' : '12.4 MB' },
-                { label: 'Rows', value: '1,240' },
-                { label: 'Columns', value: '8' },
+                { label: 'Size', value: file && typeof file.size === 'number' ? (file.size / (1024 * 1024)).toFixed(1) + ' MB' : '12.4 MB' },
+                { label: 'Total Records', value: tableData && tableData.length > 0 ? tableData.length.toLocaleString() : (file ? 'Calculating...' : '1,240') },
+                { label: 'Total Variables', value: columns && columns.length > 0 ? columns.length.toString() : (file ? 'Calculating...' : '8') },
               ].map((detail) => (
                 <div key={detail.label} className="flex justify-between items-center text-[12px]">
                   <span className="text-slate-400 font-bold">{detail.label}</span>
@@ -297,6 +341,23 @@ const UploadPage = () => {
             >
               Cancel
             </Button>
+
+            {(processedDatasetId || tableData.length > 0) && (
+              <Button
+                type="button"
+                onClick={() => {
+                  if (processedDatasetId) {
+                    window.location.href = `/analysis?datasetId=${processedDatasetId}`;
+                  } else {
+                    window.location.href = '/analysis';
+                  }
+                }}
+                className="w-full h-12 rounded-xl bg-purple-700 text-white font-black text-[12px] uppercase tracking-widest shadow-lg shadow-purple-900/20 hover:bg-purple-800 transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+              >
+                Proceed to Analysis
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
