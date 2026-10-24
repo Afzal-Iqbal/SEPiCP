@@ -1,16 +1,18 @@
 """Create default admin/staff users from settings or built-in student defaults."""
+import logging
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db.utils import OperationalError, ProgrammingError
+
+logger = logging.getLogger(__name__)
 
 
-def ensure_default_user() -> bool:
+def ensure_default_user():
     """
     Ensure standard admin users exist in the database.
     Intended to be called from post_migrate so setup happens automatically during `manage.py migrate`.
     """
     if not getattr(settings, "DEFAULT_USER_SEED", True):
-        return False
+        return False, "DEFAULT_USER_SEED is disabled"
 
     User = get_user_model()
     created_or_updated = False
@@ -55,17 +57,17 @@ def ensure_default_user() -> bool:
                     password=uinfo["password"],
                     is_staff=uinfo["is_staff"],
                     is_superuser=uinfo["is_superuser"],
+                    role=uinfo["role"],
                 )
-                user.role = uinfo["role"]
-                user.save(update_fields=["role", "is_staff", "is_superuser"])
                 created_or_updated = True
             else:
                 user.set_password(uinfo["password"])
                 user.is_staff = uinfo["is_staff"]
                 user.is_superuser = uinfo["is_superuser"]
                 user.role = uinfo["role"]
-                user.save(update_fields=["password", "role", "is_staff", "is_superuser"])
+                user.save()
                 created_or_updated = True
-        return created_or_updated
-    except (OperationalError, ProgrammingError):
-        return False
+        return created_or_updated, None
+    except Exception as exc:
+        logger.exception("Error in ensure_default_user: %s", exc)
+        return False, str(exc)
