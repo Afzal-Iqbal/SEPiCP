@@ -144,6 +144,7 @@ if _database_url:
             default=_database_url,
             conn_max_age=600,
             conn_health_checks=True,
+            ssl_require=True,
         )
     }
 elif os.environ.get("MYSQL_HOST") and os.environ.get("MYSQL_HOST") not in ("127.0.0.1", "localhost"):
