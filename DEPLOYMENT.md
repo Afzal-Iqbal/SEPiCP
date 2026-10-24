@@ -4,11 +4,31 @@ This repository (`branch: iAfzal`) is configured for separated production deploy
 - **Frontend (React + Vite)**: Hosted on **Vercel**  
   👉 **Live Production URL**: [https://sepicp-frontend.vercel.app](https://sepicp-frontend.vercel.app)  
   👉 **Vercel Project Dashboard**: [https://vercel.com/afzal-iqbals-projects/sepicp-frontend](https://vercel.com/afzal-iqbals-projects/sepicp-frontend)
-- **Backend (Django REST Framework)**: Hosted on **Render** (with optional managed PostgreSQL)
+- **Backend (Django REST Framework)**: Hosted on **Koyeb** (100% Free, no credit card required) or **Render**
 
 ---
 
-## 1. Deploy Backend on Render
+## 1. Deploy Backend on Koyeb (100% Free, No Credit Card Required)
+
+1. Sign up / Log in to [Koyeb](https://app.koyeb.com/) (Click **Sign in with GitHub**).
+2. Click **Create Service** > **GitHub**.
+3. Select repository `SyedHilalHussain/SEPiCP` and branch **`iAfzal`**.
+4. Koyeb automatically detects Python Buildpack from [`requirements.txt`](./requirements.txt), [`runtime.txt`](./runtime.txt), and [`Procfile`](./Procfile).
+5. In **Environment Variables**, add:
+   - `DJANGO_SECRET_KEY`: *(enter a random secret string)*
+   - `DJANGO_DEBUG`: `false`
+   - `CORS_ALLOW_ALL_ORIGINS`: `true`
+   - `DEFAULT_USER_SEED`: `true`
+   - `DEFAULT_USER_EMAIL`: `admin@sepicp.local`
+   - `DEFAULT_USER_PASSWORD`: `<your-secure-password>`
+6. Instance type: Select **Nano (Free)**.
+7. Click **Deploy**.
+8. Koyeb will build the app, run database migrations, and output a live URL (e.g. `https://sepicp-backend-<your-user>.koyeb.app`).
+9. In your [Vercel Project Settings](https://vercel.com/afzal-iqbals-projects/sepicp-frontend/settings/environment-variables), set `VITE_API_BASE_URL` to `https://sepicp-backend-<your-user>.koyeb.app/api`.
+
+---
+
+## 2. Deploy Backend on Render (Alternative)
 
 You can deploy the backend using either **Render Blueprints (1-Click)** or as a **Manual Web Service**.
 
