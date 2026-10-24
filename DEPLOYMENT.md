@@ -1,7 +1,9 @@
 # 🚀 Deployment Guide: Vercel (Frontend) & Render (Backend)
 
 This repository (`branch: iAfzal`) is configured for separated production deployment:
-- **Frontend (React + Vite)**: Hosted on **Vercel**
+- **Frontend (React + Vite)**: Hosted on **Vercel**  
+  👉 **Live Production URL**: [https://sepicp-frontend.vercel.app](https://sepicp-frontend.vercel.app)  
+  👉 **Vercel Project Dashboard**: [https://vercel.com/afzal-iqbals-projects/sepicp-frontend](https://vercel.com/afzal-iqbals-projects/sepicp-frontend)
 - **Backend (Django REST Framework)**: Hosted on **Render** (with optional managed PostgreSQL)
 
 ---
