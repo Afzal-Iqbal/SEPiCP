@@ -269,28 +269,30 @@ try:
 except OSError:
     _LOG_FILE = None
 
-if _LOG_FILE is not None:
-    LOGGING = {
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "std": {
-                "format": "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-            },
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "std": {
+            "format": "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
         },
-        "handlers": {
-            "django_file": {
-                "level": "DEBUG" if DEBUG else "INFO",
-                "class": "logging.FileHandler",
-                "filename": str(_LOG_FILE),
-                "formatter": "std",
-            },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "std",
         },
-        "loggers": {
-            "django.request": {
-                "handlers": ["django_file"],
-                "level": "ERROR",
-                "propagate": False,
-            },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": True,
         },
-    }
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": True,
+        },
+    },
+}
