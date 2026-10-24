@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: sepicp-backend
+    runtime: python
+    branch: iAfzal
+    buildCommand: "./render-build.sh"
+    startCommand: "gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --chdir backend"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com,localhost,127.0.0.1"
+      - key: CORS_ALLOW_ALL_ORIGINS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sepicp-db
+          property: connectionString
+
+databases:
+  - name: sepicp-db
+    databaseName: sepicp_db
+    user: sepicp_user
+    plan: free

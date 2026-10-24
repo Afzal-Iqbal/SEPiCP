@@ -37,15 +37,28 @@ SECRET_KEY = os.environ.get(
 DEBUG = _env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = [
     h.strip()
-    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,.onrender.com").split(",")
     if h.strip()
 ]
 # Local Waitress / health checks use 127.0.0.1 even when production .env lists only the public host.
-for _local_host in ("127.0.0.1", "localhost"):
+for _local_host in ("127.0.0.1", "localhost", ".onrender.com"):
     if _local_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_local_host)
+
+# Render external URL if provided:
+_render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
+if _render_host and _render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_render_host)
+
 _csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf.split(",") if o.strip()]
+for _trusted in ("https://*.onrender.com", "https://*.vercel.app"):
+    if _trusted not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_trusted)
+if _render_host:
+    _render_origin = f"https://{_render_host}"
+    if _render_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_render_origin)
 
 _fs = os.environ.get("DJANGO_FORCE_SCRIPT_NAME", "").strip()
 FORCE_SCRIPT_NAME = _fs if _fs else None
@@ -104,16 +117,46 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 
 # MySQL database name: create `sepicp_db` on both local MySQL/MariaDB and the server used by IIS.
 # Override host/port/user/password in CI/CD or IIS via MYSQL_* env vars (see .env.example).
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('MYSQL_DATABASE', 'sepicp_db'),
-        'USER': os.environ.get('MYSQL_USER', 'root'),
-        'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
-        'HOST': os.environ.get('MYSQL_HOST', '127.0.0.1'),
-        'PORT': os.environ.get('MYSQL_PORT', '3306'),
+import dj_database_url
+
+_database_url = os.environ.get("DATABASE_URL")
+if _database_url:
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=_database_url,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+elif os.environ.get("MYSQL_HOST") and os.environ.get("MYSQL_HOST") not in ("127.0.0.1", "localhost"):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('MYSQL_DATABASE', 'sepicp_db'),
+            'USER': os.environ.get('MYSQL_USER', 'root'),
+            'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
+            'HOST': os.environ.get('MYSQL_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('MYSQL_PORT', '3306'),
+        }
+    }
+elif os.environ.get("MYSQL_DATABASE") and os.environ.get("MYSQL_USER"):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('MYSQL_DATABASE', 'sepicp_db'),
+            'USER': os.environ.get('MYSQL_USER', 'root'),
+            'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
+            'HOST': os.environ.get('MYSQL_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('MYSQL_PORT', '3306'),
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -166,25 +209,14 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS (same-origin SPA under IIS does not need browser CORS; set origins for split hosting)
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
+# CORS: enabled for split hosting (Vercel frontend + Render backend)
+CORS_ALLOW_CREDENTIALS = True
+_cors = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _cors:
+    CORS_ALLOWED_ORIGINS = _cors
     CORS_ALLOW_ALL_ORIGINS = False
-    _cors = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-    if _cors:
-        CORS_ALLOWED_ORIGINS = _cors
-    else:
-        CORS_ALLOWED_ORIGINS = []
-        for h in ALLOWED_HOSTS:
-            if not h or h == "*" or h == "testserver":
-                continue
-            if h in ("localhost", "127.0.0.1"):
-                CORS_ALLOWED_ORIGINS.extend([f"http://{h}", f"https://{h}"])
-            else:
-                CORS_ALLOWED_ORIGINS.append(f"https://{h}")
-    if not CORS_ALLOWED_ORIGINS:
-        CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = True
 
 AUTH_USER_MODEL = 'users.User'
 
