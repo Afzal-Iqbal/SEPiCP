@@ -37,11 +37,11 @@ SECRET_KEY = os.environ.get(
 DEBUG = _env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = [
     h.strip()
-    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,.onrender.com").split(",")
+    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,.onrender.com,.koyeb.app").split(",")
     if h.strip()
 ]
 # Local Waitress / health checks use 127.0.0.1 even when production .env lists only the public host.
-for _local_host in ("127.0.0.1", "localhost", ".onrender.com"):
+for _local_host in ("127.0.0.1", "localhost", ".onrender.com", ".koyeb.app"):
     if _local_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_local_host)
 
@@ -50,15 +50,24 @@ _render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
 if _render_host and _render_host not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_render_host)
 
+# Koyeb public domain if provided:
+_koyeb_host = os.environ.get("KOYEB_PUBLIC_DOMAIN", "").strip()
+if _koyeb_host and _koyeb_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_koyeb_host)
+
 _csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf.split(",") if o.strip()]
-for _trusted in ("https://*.onrender.com", "https://*.vercel.app"):
+for _trusted in ("https://*.onrender.com", "https://*.koyeb.app", "https://*.vercel.app"):
     if _trusted not in CSRF_TRUSTED_ORIGINS:
         CSRF_TRUSTED_ORIGINS.append(_trusted)
 if _render_host:
     _render_origin = f"https://{_render_host}"
     if _render_origin not in CSRF_TRUSTED_ORIGINS:
         CSRF_TRUSTED_ORIGINS.append(_render_origin)
+if _koyeb_host:
+    _koyeb_origin = f"https://{_koyeb_host}"
+    if _koyeb_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_koyeb_origin)
 
 _fs = os.environ.get("DJANGO_FORCE_SCRIPT_NAME", "").strip()
 FORCE_SCRIPT_NAME = _fs if _fs else None
