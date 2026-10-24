@@ -72,23 +72,32 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = async (email, password, role) => {
-    // Admin (hardcoded fallback kept for dev convenience)
-    if (role === 'admin' && !localStorage.getItem('access')) {
-      if (email === 'nedscholar@gmail.com' && password === '123456') {
-        const adminUser = {
-          id: 'admin-001',
-          name: 'Principal Administrator',
-          email: 'nedscholar@gmail.com',
-          role: 'admin',
-          department: 'Executive Research Board',
-        };
-        setUser(adminUser);
-        localStorage.setItem('research_user', JSON.stringify(adminUser));
-        localStorage.setItem('research_token', 'admin-token-xyz');
-        logActivity('login', 'Admin logged into dashboard', adminUser);
-        return { success: true };
-      }
-      return { success: false, message: 'Invalid administrator credentials.' };
+    // Quick demo bypass for nedscholar demo admin
+    if (role === 'admin' && email === 'nedscholar@gmail.com' && password === '123456') {
+      try {
+        const tokenRes = await fetch(apiUrl('/login/'), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          localStorage.setItem("access", tokenData.access);
+          localStorage.setItem("refresh", tokenData.refresh);
+        }
+      } catch (_) {}
+      const adminUser = {
+        id: 'admin-001',
+        name: 'Principal Administrator',
+        email: 'nedscholar@gmail.com',
+        role: 'admin',
+        department: 'Executive Research Board',
+      };
+      setUser(adminUser);
+      localStorage.setItem('research_user', JSON.stringify(adminUser));
+      localStorage.setItem('research_token', 'admin-token-xyz');
+      logActivity('login', 'Admin logged into dashboard', adminUser);
+      return { success: true };
     }
 
     // JWT login — fetch profile to get role
