@@ -1,1 +1,2 @@
-web: python backend/manage.py migrate --noinput && gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --chdir backend
+release: python manage.py migrate --noinput
+web: python manage.py migrate --noinput && gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --chdir backend
