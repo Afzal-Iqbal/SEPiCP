@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import logging
 import traceback
+from io import StringIO
 
 from django.conf import settings
 from django.contrib import admin
@@ -14,6 +15,35 @@ from .spa_views import spa_catch_all
 logger = logging.getLogger(__name__)
 
 
+def ensure_database_migrated():
+    """Inspect PostgreSQL schema and auto-apply migrations and seed if needed."""
+    from django.db import connection
+    from django.core.management import call_command
+    migrate_out = None
+    migrate_err = None
+
+    try:
+        with connection.cursor() as cursor:
+            tables = connection.introspection.table_names(cursor)
+            needs_migrate = False
+            if "user" not in tables or "instructor_surveys" not in tables:
+                needs_migrate = True
+            else:
+                columns = [c.name for c in connection.introspection.get_table_description(cursor, "user")]
+                if "role" not in columns:
+                    needs_migrate = True
+
+        if needs_migrate:
+            out = StringIO()
+            call_command("migrate", interactive=False, stdout=out)
+            migrate_out = out.getvalue()
+    except Exception as e:
+        migrate_err = str(e)
+        logger.exception("Migration check/run error: %s", e)
+
+    return migrate_out, migrate_err
+
+
 def root_health(request):
     db_engine = settings.DATABASES["default"].get("ENGINE", "unknown")
     has_db_url = bool(os.environ.get("DATABASE_URL"))
@@ -22,26 +52,19 @@ def root_health(request):
     error_msg = None
     seed_result = None
 
+    migrate_out, migrate_err = ensure_database_migrated()
+
     try:
         from django.contrib.auth import get_user_model
         User = get_user_model()
         user_count = User.objects.count()
         db_status = "connected"
     except Exception as e:
-        logger.warning("Database check failed, attempting auto-migration: %s", e)
-        try:
-            from django.core.management import call_command
-            call_command("migrate", interactive=False)
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-            user_count = User.objects.count()
-            db_status = "connected_after_migrate"
-        except Exception as e2:
-            db_status = "error"
-            error_msg = str(e2)
+        db_status = "error"
+        error_msg = str(e)
 
     # Always ensure default admin user is seeded
-    if db_status in ("connected", "connected_after_migrate"):
+    if db_status == "connected":
         try:
             from users.default_user import ensure_default_user
             seed_ok, seed_err = ensure_default_user()
@@ -59,7 +82,8 @@ def root_health(request):
             "has_database_url": has_db_url,
             "engine": db_engine,
             "status": db_status,
-            "error": error_msg,
+            "error": error_msg or migrate_err,
+            "migrate_log": migrate_out,
             "user_count": user_count,
             "seed_result": seed_result,
         },
