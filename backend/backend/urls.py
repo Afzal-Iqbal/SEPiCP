@@ -25,6 +25,10 @@ def ensure_database_migrated():
     try:
         with connection.cursor() as cursor:
             tables = connection.introspection.table_names(cursor)
+
+            # Fast-path: if core tables already exist, no migration check needed
+            if "instructor_surveys" in tables and "student_surveys" in tables and "user" in tables:
+                return "Already up-to-date", None
             
             # 1. Guarantee "role" column on "user" table
             if "user" in tables:

@@ -6,6 +6,23 @@ import django.db.models.deletion
 import users.models
 
 
+def add_role_column_if_not_exists(apps, schema_editor):
+    connection = schema_editor.connection
+    with connection.cursor() as cursor:
+        if connection.vendor == 'postgresql':
+            cursor.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "role" varchar(20) DEFAULT \'student\' NOT NULL;')
+        elif connection.vendor == 'sqlite':
+            cursor.execute('PRAGMA table_info("user");')
+            columns = [c[1] for c in cursor.fetchall()]
+            if 'role' not in columns:
+                cursor.execute('ALTER TABLE "user" ADD COLUMN "role" varchar(20) DEFAULT \'student\' NOT NULL;')
+        else:
+            try:
+                cursor.execute('ALTER TABLE "user" ADD COLUMN "role" varchar(20) DEFAULT \'student\' NOT NULL;')
+            except Exception:
+                pass
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -100,10 +117,17 @@ class Migration(migrations.Migration):
                 'db_table': 'instructor_surveys',
             },
         ),
-        migrations.AddField(
-            model_name='user',
-            name='role',
-            field=models.CharField(choices=[('student', 'Student'), ('teacher', 'Teacher'), ('admin', 'Admin')], default='student', max_length=20),
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.AddField(
+                    model_name='user',
+                    name='role',
+                    field=models.CharField(choices=[('student', 'Student'), ('teacher', 'Teacher'), ('admin', 'Admin')], default='student', max_length=20),
+                ),
+            ],
+            database_operations=[
+                migrations.RunPython(add_role_column_if_not_exists, reverse_code=migrations.RunPython.noop),
+            ],
         ),
         migrations.CreateModel(
             name='StudentSurvey',
