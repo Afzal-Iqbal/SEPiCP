@@ -106,43 +106,38 @@ def root_health(request):
 
 
 def debug_auth(request):
-    import traceback
-    from django.contrib.auth import authenticate, get_user_model
-    User = get_user_model()
+    import os, traceback
+    from io import StringIO
+    from django.core.management import call_command
+    from django.db import connection
+
     info = {
+        "migration_files": [],
+        "applied_migrations": [],
         "db_tables": [],
-        "user_count": 0,
-        "users": [],
-        "seed_result": None,
-        "auth_test": None,
+        "makemigrations_log": None,
+        "migrate_log": None,
         "error": None,
-        "traceback": None,
     }
     try:
-        from django.db import connection
+        from pathlib import Path
+        mig_dir = Path(__file__).resolve().parent.parent / "users" / "migrations"
+        if mig_dir.is_dir():
+            info["migration_files"] = sorted([f.name for f in mig_dir.iterdir() if f.is_file()])
+
         with connection.cursor() as cursor:
-            info["db_tables"] = connection.introspection.table_names(cursor)
+            info["db_tables"] = sorted(connection.introspection.table_names(cursor))
+            cursor.execute("SELECT id, app, name, applied FROM django_migrations ORDER BY id")
+            info["applied_migrations"] = [{"id": r[0], "app": r[1], "name": r[2], "applied": str(r[3])} for r in cursor.fetchall()]
 
-        from users.default_user import ensure_default_user
-        ok, err = ensure_default_user()
-        info["seed_result"] = {"ok": ok, "error": err}
+        out_mm = StringIO()
+        call_command("makemigrations", dry_run=True, stdout=out_mm)
+        info["makemigrations_log"] = out_mm.getvalue()
 
-        info["user_count"] = User.objects.count()
-        for u in User.objects.all()[:5]:
-            info["users"].append({
-                "id": u.id,
-                "email": u.email,
-                "username": u.username,
-                "role": getattr(u, "role", None),
-                "is_staff": u.is_staff,
-                "is_superuser": u.is_superuser,
-            })
+        out_mig = StringIO()
+        call_command("migrate", interactive=False, stdout=out_mig)
+        info["migrate_log"] = out_mig.getvalue()
 
-        auth_user = authenticate(email="admin@sepicp.com", password="Admin@123456")
-        info["auth_test"] = {
-            "success": auth_user is not None,
-            "user": str(auth_user) if auth_user else None,
-        }
     except Exception as e:
         info["error"] = str(e)
         info["traceback"] = traceback.format_exc()
