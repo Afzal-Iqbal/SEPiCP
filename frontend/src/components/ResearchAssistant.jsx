@@ -40,6 +40,7 @@ import {
 import { getRandomPromptForVariable } from '../config/prompts';
 import { exportBatchToWord, formatAcademicCitation } from '../lib/docxExport';
 import { useAuth } from '../context/AuthContext';
+import { apiUrl } from '../lib/api';
 
 export default function ResearchAssistant() {
   const { user } = useAuth();
@@ -233,7 +234,7 @@ export default function ResearchAssistant() {
     setValidating(true);
     setValidationResult(null);
 
-    const validateUrl = 'http://127.0.0.1:8080/api/assistant/validate-key/';
+    const validateUrl = apiUrl('/assistant/validate-key/');
 
     try {
       const res = await fetchWithRetry(validateUrl, {
@@ -253,7 +254,7 @@ export default function ResearchAssistant() {
         setValidationResult({ valid: false, error: data.error || 'Key validation failed.' });
       }
     } catch (err) {
-      setValidationResult({ valid: false, error: err.message || 'Could not connect to backend server on port 8080.' });
+      setValidationResult({ valid: false, error: err.message || 'Could not connect to backend server.' });
     } finally {
       setValidating(false);
     }
@@ -290,10 +291,10 @@ export default function ResearchAssistant() {
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
 
-    const apiUrl = 'http://127.0.0.1:8080/api/assistant/ask/';
+    const askEndpoint = apiUrl('/assistant/ask/');
 
     try {
-      const res = await fetchWithRetry(apiUrl, {
+      const res = await fetchWithRetry(askEndpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -398,7 +399,7 @@ export default function ResearchAssistant() {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
-    const askUrl = 'http://127.0.0.1:8080/api/assistant/ask/';
+    const askUrl = apiUrl('/assistant/ask/');
 
     const accumulated = [];
 

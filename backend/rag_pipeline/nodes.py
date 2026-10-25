@@ -50,7 +50,29 @@ def _get_api_key(state: GraphState = None):
             raise ValueError("Neither user-provided API key nor GEMINI_API_KEY/GOOGLE_API_KEY environment variable is set.")
         return key
 
+def ensure_chroma_db_extracted():
+    db_path = Path(DEFAULT_DB_PATH)
+    if db_path.exists() and any(db_path.iterdir()):
+        return
+    parts_dir = BASE_DIR / "chroma_parts"
+    if parts_dir.is_dir():
+        parts = sorted(parts_dir.glob("chroma_part_*"))
+        if parts:
+            import io, tarfile
+            try:
+                buf = io.BytesIO()
+                for p in parts:
+                    with open(p, "rb") as f:
+                        buf.write(f.read())
+                buf.seek(0)
+                with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+                    tar.extractall(path=str(BASE_DIR))
+                print(f"[RAG] Successfully extracted Chroma DB to {DEFAULT_DB_PATH}")
+            except Exception as e:
+                print(f"[RAG] Failed to extract Chroma DB from parts: {e}")
+
 def get_vectorstore(state: GraphState = None):
+    ensure_chroma_db_extracted()
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001",
         google_api_key=_get_embedding_key(state)
@@ -118,18 +140,48 @@ def gate_router(state: GraphState) -> str:
     return "refuse" if state["max_similarity"] < SIMILARITY_THRESHOLD else "rerank"
 
 def refuse_node(state: GraphState) -> GraphState:
+    chunks = state.get("chunks", [])
     suggested_topics = list({
         f"{c['metadata'].get('paper_title', 'Paper')} ({c['metadata'].get('section', 'general')})"
-        for c in state.get("chunks", [])[:5]
+        for c in chunks[:5]
         if "metadata" in c
     })
-    return {
-        **state,
-        "refused": True,
-        "answer": "This doesn't appear to be covered in the indexed papers.",
-        "suggested_topics": suggested_topics,
-        "citations": []
-    }
+
+    if chunks and state.get("max_similarity", 0.0) >= 0.1:
+        return {
+            **state,
+            "refused": True,
+            "answer": "This doesn't appear to be covered in the indexed papers.",
+            "suggested_topics": suggested_topics,
+            "citations": []
+        }
+
+    try:
+        llm = get_llm(state)
+        messages = [
+            HumanMessage(content=(
+                f"You are a specialized educational research assistant. The user asked the following pedagogical question:\n\n"
+                f"{state['question']}\n\n"
+                f"Provide evidence-based pedagogical recommendations, active learning strategies, and classroom intervention techniques to address this. "
+                f"Structure your response with clear sections: What Works, What Doesn't, and Concrete Classroom Actions."
+            ))
+        ]
+        res = llm.invoke(messages)
+        return {
+            **state,
+            "refused": False,
+            "answer": str(res.content).strip(),
+            "suggested_topics": suggested_topics,
+            "citations": []
+        }
+    except Exception as e:
+        return {
+            **state,
+            "refused": True,
+            "answer": "This doesn't appear to be covered in the indexed papers.",
+            "suggested_topics": suggested_topics,
+            "citations": []
+        }
 
 def _section_boost(query: str):
     q = query.lower()

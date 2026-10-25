@@ -13,6 +13,7 @@ import {
 import { Card, CardHeader, CardContent, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { motion, AnimatePresence } from 'framer-motion';
+import { apiUrl } from '../lib/api';
 
 export default function AdminResponses() {
   const [teachers, setTeachers] = useState([]);
@@ -124,7 +125,7 @@ export default function AdminResponses() {
       setError('');
       setSuccess('');
       const token = localStorage.getItem('access');
-      const res = await fetch(`http://127.0.0.1:8080/api/admin/surveys/export/?course_id=${courseId}&type=${type}`, {
+      const res = await fetch(apiUrl(`/admin/surveys/export/?course_id=${courseId}&type=${type}`), {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) throw new Error("Export failed");
