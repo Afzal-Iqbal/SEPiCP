@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def ensure_database_migrated():
-    """Inspect PostgreSQL schema and auto-apply migrations and seed if needed."""
+    """Inspect schema, repair missing columns/fake migration records, and migrate."""
     from django.db import connection
     from django.core.management import call_command
     migrate_out = None
@@ -25,21 +25,30 @@ def ensure_database_migrated():
     try:
         with connection.cursor() as cursor:
             tables = connection.introspection.table_names(cursor)
-            needs_migrate = False
-            if "user" not in tables or "instructor_surveys" not in tables:
-                needs_migrate = True
-            else:
-                columns = [c.name for c in connection.introspection.get_table_description(cursor, "user")]
-                if "role" not in columns:
-                    needs_migrate = True
+            
+            # 1. Guarantee "role" column on "user" table
+            if "user" in tables:
+                if connection.vendor == "postgresql":
+                    cursor.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "role" varchar(20) NOT NULL DEFAULT \'student\';')
+                elif connection.vendor == "sqlite":
+                    cols = [c.name for c in connection.introspection.get_table_description(cursor, "user")]
+                    if "role" not in cols:
+                        cursor.execute('ALTER TABLE "user" ADD COLUMN "role" varchar(20) NOT NULL DEFAULT \'student\';')
 
-        if needs_migrate:
-            out = StringIO()
-            call_command("migrate", interactive=False, stdout=out)
-            migrate_out = out.getvalue()
+            # 2. Check if migration 0005 was falsely marked applied while tables are missing
+            if "django_migrations" in tables:
+                cursor.execute("SELECT 1 FROM django_migrations WHERE app='users' AND name LIKE '0005%'")
+                has_0005 = cursor.fetchone()
+                if has_0005 and "instructor_surveys" not in tables:
+                    cursor.execute("DELETE FROM django_migrations WHERE app='users' AND name LIKE '0005%'")
+
+        # 3. Run migrate to apply migration 0005 or any pending migrations
+        out = StringIO()
+        call_command("migrate", interactive=False, stdout=out)
+        migrate_out = out.getvalue()
     except Exception as e:
         migrate_err = str(e)
-        logger.exception("Migration check/run error: %s", e)
+        logger.exception("Migration repair/run error: %s", e)
 
     return migrate_out, migrate_err
 
